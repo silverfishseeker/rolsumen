@@ -1,0 +1,14 @@
+pruebas/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Datos generados por la app (audio, transcripciones, resúmenes)
+datos/
+
+# Craig self-hosted: secretos y grabaciones
+app/craig/install.config
+app/craig/rec/
