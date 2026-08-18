@@ -13,7 +13,11 @@ from pathlib import Path
 # Raíz del proyecto (este archivo vive en <raíz>/app/config.py)
 RAIZ = Path(__file__).resolve().parent.parent
 
-RUTA_CONFIG = RAIZ / "app" / "config.ini"
+# En la raíz del proyecto, para tenerlo a mano.
+RUTA_CONFIG = RAIZ / "config.ini"
+
+# Plantillas de los prompts, editables sin tocar el código.
+DIR_PROMPTS = RAIZ / "prompts"
 
 # Carpetas internas: no configurables, siempre en el mismo sitio.
 DIR_DATOS = RAIZ / "datos"
@@ -52,21 +56,50 @@ secreto_cliente =
 id_aplicacion = 1539028879342047263
 
 [general]
+# Qué tipo de resumen generar. Cada modo usa sus propios prompts, que están
+# en la carpeta prompts/<modo>/ y se pueden editar.
+#
+#   rol           Crónica de partida de rol. Recoge solo la acción DENTRO de
+#                 la ficción e ignora la charla de la mesa (reglas, tiradas,
+#                 bromas, temas ajenos).
+#   conversacion  Resumen de una conversación normal. Recoge todo lo que se
+#                 habló, sin filtrar nada por ser informal.
+modo = rol
+
 # Carpeta ADICIONAL donde copiar los resúmenes.
 # Los resúmenes se guardan siempre en datos/resumenes/; si indicas una ruta
 # aquí, se guarda además una copia en ella.
 # Ejemplo: carpeta_resumenes = C:\\Users\\tu_usuario\\Documents\\Rol
 carpeta_resumenes =
 
-# Modelo de Whisper para transcribir. large-v3 es el recomendado.
-# Alternativas más rápidas y menos precisas: medium, small, base.
-modelo_whisper = large-v3
+# Idioma de las grabaciones, en código ISO (es, en, fr, de, it, pt...).
+idioma = es
 
-# Modelo de Ollama para generar la cronología.
-modelo_ollama = qwen3:8b
+[modelos]
+# Modelo de transcripción. Se descarga solo la primera vez que se usa.
+#   large-v3  el más preciso (recomendado)
+#   medium    más rápido, comete más fallos
+#   small     rápido y ligero
+#   base      muy rápido, poco fiable
+transcripcion = large-v3
 
-# Idioma de las grabaciones.
-idioma = Spanish
+# Precisión numérica de la transcripción. Afecta a la memoria de vídeo:
+#   float16       calidad máxima (recomendado con 8 GB de VRAM o más)
+#   int8_float16  ahorra memoria, casi misma calidad
+#   int8          el más ligero, para GPUs pequeñas o CPU
+precision = float16
+
+# Dónde transcribir: auto (usa la GPU si la hay), cuda o cpu.
+dispositivo = auto
+
+# Modelo de Ollama que redacta la crónica. Debe estar descargado
+# (comprobar con: ollama list).
+resumen = qwen3:8b
+
+# Tamaño de contexto que se le pide a Ollama. Por defecto Ollama usa 4096,
+# muy poco para esto. Súbelo si tienes VRAM de sobra; bájalo si se queda
+# sin memoria.
+contexto_resumen = 16384
 
 [jugadores]
 # Asocia cada usuario de Discord con el nombre de su personaje.
@@ -102,13 +135,46 @@ class Credenciales:
 
 
 @dataclass
+class Modelos:
+    """Qué modelos se usan y cómo se ejecutan."""
+
+    transcripcion: str = "large-v3"
+    precision: str = "float16"
+    dispositivo: str = "auto"
+    resumen: str = "qwen3:8b"
+    contexto_resumen: int = 16384
+
+    def dispositivo_efectivo(self) -> str:
+        """Resuelve 'auto' mirando si hay GPU disponible."""
+        if self.dispositivo != "auto":
+            return self.dispositivo
+        try:
+            import torch
+
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            return "cpu"
+
+    def precision_efectiva(self) -> str:
+        """En CPU no existe float16: se degrada a int8 automáticamente."""
+        if self.dispositivo_efectivo() == "cpu" and self.precision == "float16":
+            return "int8"
+        return self.precision
+
+
+# Modos de resumen disponibles. Cada uno tiene su carpeta en prompts/.
+MODOS = ("rol", "conversacion")
+MODO_POR_DEFECTO = "rol"
+
+
+@dataclass
 class Config:
     """Configuración efectiva de la aplicación."""
 
     carpeta_resumenes_extra: Path | None = None
-    modelo_whisper: str = "large-v3"
-    modelo_ollama: str = "qwen3:8b"
-    idioma: str = "Spanish"
+    modo: str = MODO_POR_DEFECTO
+    idioma: str = "es"
+    modelos: Modelos = field(default_factory=Modelos)
     jugadores: dict[str, str] = field(default_factory=dict)
     discord: Credenciales = field(default_factory=Credenciales)
 
@@ -154,9 +220,33 @@ def cargar(ruta: Path = RUTA_CONFIG) -> Config:
         if carpeta:
             cfg.carpeta_resumenes_extra = Path(carpeta).expanduser()
 
-        cfg.modelo_whisper = general.get("modelo_whisper", cfg.modelo_whisper).strip()
-        cfg.modelo_ollama = general.get("modelo_ollama", cfg.modelo_ollama).strip()
         cfg.idioma = general.get("idioma", cfg.idioma).strip()
+
+        modo = general.get("modo", "").strip().lower()
+        # Un modo desconocido vuelve al de por defecto en vez de romper: es
+        # preferible generar un resumen a no generar ninguno.
+        cfg.modo = modo if modo in MODOS else MODO_POR_DEFECTO
+
+    if parser.has_section("modelos"):
+        modelos = parser["modelos"]
+        try:
+            contexto = int(modelos.get("contexto_resumen", "").strip() or 0)
+        except ValueError:
+            contexto = 0
+
+        cfg.modelos = Modelos(
+            transcripcion=modelos.get(
+                "transcripcion", cfg.modelos.transcripcion
+            ).strip()
+            or cfg.modelos.transcripcion,
+            precision=modelos.get("precision", cfg.modelos.precision).strip()
+            or cfg.modelos.precision,
+            dispositivo=modelos.get("dispositivo", cfg.modelos.dispositivo).strip()
+            or cfg.modelos.dispositivo,
+            resumen=modelos.get("resumen", cfg.modelos.resumen).strip()
+            or cfg.modelos.resumen,
+            contexto_resumen=contexto or cfg.modelos.contexto_resumen,
+        )
 
     if parser.has_section("discord"):
         discord = parser["discord"]

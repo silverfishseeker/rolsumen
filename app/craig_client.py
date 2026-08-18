@@ -152,6 +152,84 @@ def grabaciones_terminadas(dir_craig: Path = DIR_CRAIG) -> list[Grabacion]:
     return grabaciones
 
 
+def usuarios(id_grabacion: str, dir_craig: Path = DIR_CRAIG) -> dict[str, str]:
+    """Devuelve qué usuario de Discord corresponde a cada número de pista.
+
+    El `cook` self-hosted nombra las pistas sólo con su número (`1.flac`,
+    `2.flac`...), a diferencia de la web pública de Craig, que les añade el
+    nombre. La correspondencia está en `<ID>.ogg.users`, un fragmento JSON con
+    una entrada por pista:
+
+        "0":{}
+        ,"1":{"id":"...","username":"silverfishlord",...}
+
+    Ese archivo pesa varios MB porque incluye los avatares en base64, así que
+    se extraen los nombres con una expresión regular en vez de parsear el JSON
+    entero.
+    """
+    try:
+        proceso = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "craig",
+                "bash",
+                "-c",
+                # Se recortan los avatares antes de sacar el archivo del
+                # contenedor: sin esto se transferirían megas de base64.
+                f"sed -E 's/\"avatar\":\"[^\"]*\"//g' /app/rec/{id_grabacion}.ogg.users",
+            ],
+            cwd=str(dir_craig),
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_CONSULTA,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (subprocess.SubprocessError, OSError):
+        return {}
+
+    if proceso.returncode != 0:
+        return {}
+
+    encontrados = re.findall(
+        r'"(\d+)"\s*:\s*\{[^{}]*?"username"\s*:\s*"([^"]+)"', proceso.stdout
+    )
+    return {numero: nombre for numero, nombre in encontrados}
+
+
+def asegurar_atd(dir_craig: Path = DIR_CRAIG) -> bool:
+    """Arranca el planificador `atd` dentro del contenedor si no está activo.
+
+    `cook.sh` usa `at` para programar el borrado de sus archivos temporales
+    dentro de dos horas. Si el demonio `atd` no está corriendo, `at` devuelve
+    error, el script aborta y el ZIP sale vacío, sin ningún mensaje que
+    explique la causa real. La imagen de Craig no lo arranca por su cuenta.
+    """
+    try:
+        proceso = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "craig",
+                "bash",
+                "-c",
+                "pgrep atd >/dev/null || service atd start",
+            ],
+            cwd=str(dir_craig),
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_CONSULTA,
+        )
+        return proceso.returncode == 0
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
 def cocinar(
     id_grabacion: str,
     destino_zip: Path,
@@ -163,6 +241,7 @@ def cocinar(
     Equivale a pulsar "Multi-pista → FLAC" en la web de descarga de Craig.
     """
     destino_zip.parent.mkdir(parents=True, exist_ok=True)
+    asegurar_atd(dir_craig)
 
     try:
         with destino_zip.open("wb") as salida:

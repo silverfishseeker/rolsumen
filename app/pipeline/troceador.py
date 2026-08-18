@@ -19,10 +19,11 @@ from .tipos import Bloque, Segmento
 # contexto es mucho peor que hacer un bloque de más.
 CARACTERES_POR_TOKEN = 3.0
 
-# Presupuesto de transcripción por bloque. El contexto real utilizable con
-# 8 GB de VRAM ronda los 16-20k tokens, y hay que dejar sitio para las
-# instrucciones, el resumen anterior encadenado y la respuesta generada.
-PRESUPUESTO_TOKENS_POR_BLOQUE = 8000
+# Presupuesto de transcripción por bloque. Es solo una parte del contexto del
+# modelo: en la misma ventana entran además las instrucciones (~400 tokens), el
+# resumen del bloque anterior encadenado (~500) y, sobre todo, la respuesta que
+# se va a generar (~1500). Con un contexto de 8192 hay que dejarles sitio.
+PRESUPUESTO_TOKENS_POR_BLOQUE = 4000
 
 # Cuántos segmentos alrededor del corte ideal se exploran buscando una pausa.
 VENTANA_BUSQUEDA_PAUSA = 12

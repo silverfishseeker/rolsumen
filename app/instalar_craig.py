@@ -21,6 +21,43 @@ from .config import DIR_CRAIG
 
 REPO_CRAIG = "https://github.com/CraigChat/craig.git"
 
+# Docker Compose fusiona automáticamente este archivo con el de Craig, así que
+# podemos corregir cosas sin tocar los archivos originales (y sin que los
+# cambios se pierdan al actualizar Craig).
+#
+# El problema que resuelve: el docker-compose.yml de Craig pide `image: postgres`
+# sin versión, que hoy resuelve a PostgreSQL 18. La 18 cambió dónde espera los
+# datos (`/var/lib/postgresql` en vez de `/var/lib/postgresql/data`), así que el
+# contenedor entra en bucle de reinicio. Fijando la 16 se respeta la convención
+# que Craig da por supuesta.
+COMPOSE_OVERRIDE = """\
+# Generado por Rolsumen (python -m app.instalar_craig).
+# Docker Compose lo fusiona con docker-compose.yml automáticamente.
+
+services:
+  db:
+    # Craig monta el volumen en /var/lib/postgresql/data, la convención
+    # anterior a PostgreSQL 18. Sin fijar la versión, `postgres` resuelve a
+    # la 18+ y el contenedor no arranca.
+    image: postgres:16
+"""
+
+NOMBRE_OVERRIDE = "docker-compose.override.yml"
+
+# Craig deja la configuración de Redis vacía, lo que significa "conéctate a
+# localhost". Dentro de un contenedor, localhost es el propio contenedor, no el
+# servicio `redis` del compose, así que el bot no arranca y llena el log de
+# ECONNREFUSED 127.0.0.1:6379.
+REDIS_VACIO = "redis: {},"
+REDIS_DOCKER = """redis: { host: 'redis', port: 6379, keyPrefix: 'craig:' },"""
+
+# `install.sh` copia estos _default.js a default.js al configurar, así que
+# parcheando el original basta para una instalación nueva.
+CONFIGS_A_PARCHEAR = (
+    "apps/bot/config/_default.js",
+    "apps/tasks/config/_default.js",
+)
+
 # Identificador público de la aplicación de Discord del usuario.
 APP_ID_POR_DEFECTO = "1539028879342047263"
 
@@ -68,6 +105,66 @@ def clonar(destino: Path = DIR_CRAIG) -> bool:
     return True
 
 
+def _escribir_para_linux(ruta: Path, contenido: str) -> None:
+    """Escribe un archivo con saltos de línea Unix.
+
+    Estos archivos los consume el contenedor de Craig, que es Linux. Si Python
+    los escribe con los saltos de Windows (CRLF), el shell del contenedor falla
+    al interpretarlos con un error tan poco evidente como
+    `line 4: $'\\r': command not found`.
+    """
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    # `newline="\n"` sólo evita que Python traduzca los saltos al escribir; no
+    # toca los CRLF que ya vinieran en el texto (por ejemplo, al releer un
+    # archivo que se editó con el Bloc de notas). Hay que normalizarlos.
+    normalizado = contenido.replace("\r\n", "\n").replace("\r", "\n")
+    ruta.write_text(normalizado, encoding="utf-8", newline="\n")
+
+
+def crear_override(destino: Path = DIR_CRAIG, forzar: bool = False) -> Path:
+    """Escribe el docker-compose.override.yml con nuestras correcciones."""
+    ruta = destino / NOMBRE_OVERRIDE
+    if ruta.exists() and not forzar:
+        return ruta
+    _escribir_para_linux(ruta, COMPOSE_OVERRIDE)
+    print(f"Creado {ruta}")
+    return ruta
+
+
+def apuntar_redis_a_docker(destino: Path = DIR_CRAIG) -> list[Path]:
+    """Hace que el bot y las tareas busquen Redis en el servicio de Docker.
+
+    Devuelve los archivos que ha modificado.
+    """
+    parcheados: list[Path] = []
+
+    for relativo in CONFIGS_A_PARCHEAR:
+        ruta = destino / relativo
+        if not ruta.exists():
+            continue
+
+        contenido = ruta.read_text(encoding="utf-8")
+        if REDIS_DOCKER in contenido:
+            continue  # ya estaba parcheado
+        if REDIS_VACIO not in contenido:
+            continue  # Craig ha cambiado el formato: mejor no tocar nada
+
+        _escribir_para_linux(ruta, contenido.replace(REDIS_VACIO, REDIS_DOCKER, 1))
+        parcheados.append(ruta)
+
+        # Si la configuración ya se había generado, actualizarla también.
+        generado = ruta.parent / "default.js"
+        if generado.exists():
+            actual = generado.read_text(encoding="utf-8")
+            if REDIS_VACIO in actual:
+                _escribir_para_linux(
+                    generado, actual.replace(REDIS_VACIO, REDIS_DOCKER, 1)
+                )
+                parcheados.append(generado)
+
+    return parcheados
+
+
 def _sustituir(contenido: str, clave: str, valor: str) -> str:
     """Cambia el valor de una clave del archivo de configuración."""
     patron = re.compile(rf"^{re.escape(clave)}=.*$", re.MULTILINE)
@@ -104,7 +201,7 @@ def crear_config(
         contenido = _sustituir(contenido, "DISCORD_APP_ID", app_id)
         contenido = _sustituir(contenido, "CLIENT_ID", app_id)
 
-    config.write_text(contenido, encoding="utf-8")
+    _escribir_para_linux(config, contenido)
     print(f"Creado {config}")
     return config
 
@@ -148,7 +245,7 @@ def sincronizar_credenciales(
     contenido = _sustituir(contenido, "CLIENT_ID", credenciales.id_aplicacion)
 
     try:
-        config.write_text(contenido, encoding="utf-8")
+        _escribir_para_linux(config, contenido)
     except OSError as exc:
         return False, f"No se pudo escribir {config}: {exc}"
 
@@ -186,6 +283,12 @@ def main(argv: list[str] | None = None) -> int:
     argumentos = parser.parse_args(argv)
 
     clonar()
+    crear_override(forzar=argumentos.rehacer_config)
+
+    parcheados = apuntar_redis_a_docker()
+    for ruta in parcheados:
+        print(f"Ajustado Redis en {ruta.relative_to(DIR_CRAIG)}")
+
     config = crear_config(app_id=argumentos.app_id, forzar=argumentos.rehacer_config)
 
     pendientes = valores_pendientes(config)

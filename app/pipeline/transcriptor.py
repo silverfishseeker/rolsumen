@@ -29,6 +29,20 @@ UMBRAL_CONFIANZA = -1.0
 MINIMO_REPETICIONES = 3
 PALABRAS_MAXIMAS_MULETILLA = 4
 
+# Silencio mínimo (ms) para que el detector de voz corte ahí. En una partida
+# la gente hace pausas largas: un valor bajo trocea de más sin ganar nada.
+MIN_SILENCIO_MS = 1000
+
+# Último punto Unicode del bloque "Latin Extended-A": cubre el español y las
+# lenguas europeas de alfabeto latino. Por encima empiezan griego, cirílico,
+# etc., que sobre una pista en español sólo pueden ser alucinación.
+LIMITE_LATINO = 0x024F
+
+# A partir de qué proporción de caracteres ajenos se descarta el segmento.
+# Se usa un umbral bajo porque las alucinaciones suelen mezclar alfabetos
+# dentro de la misma palabra ("прирostal": 4 de 9 caracteres, un 0,44).
+PROPORCION_ALFABETO_AJENO = 0.3
+
 # Frases que Whisper alucina de forma recurrente al final de un audio
 # (créditos de subtítulos aprendidos del corpus de entrenamiento).
 ALUCINACIONES_HABITUALES = {
@@ -124,6 +138,21 @@ def _frases_repetidas(
     return {clave for clave, veces in cuenta.items() if veces >= minimo}
 
 
+def _alfabeto_ajeno(texto: str, minimo_ajeno: float = PROPORCION_ALFABETO_AJENO) -> bool:
+    """¿El texto está escrito en un alfabeto que no corresponde al idioma?
+
+    Sobre ruido, Whisper a veces alucina en otra lengua: en las pruebas apareció
+    texto en cirílico transcribiendo una pista en español. Como el idioma se le
+    indica explícitamente, cualquier salida en otro alfabeto es un error.
+    """
+    letras = [c for c in texto if c.isalpha()]
+    if not letras:
+        return False
+
+    ajenas = sum(1 for c in letras if ord(c) > LIMITE_LATINO)
+    return ajenas / len(letras) >= minimo_ajeno
+
+
 def _es_silencio(crudo: dict) -> bool:
     """¿El propio Whisper cree que este tramo no tiene voz?
 
@@ -180,6 +209,9 @@ def filtrar_segmentos(
         if _es_silencio(crudo):
             continue
 
+        if _alfabeto_ajeno(texto):
+            continue
+
         if _es_alucinacion(texto):
             continue
 
@@ -216,30 +248,47 @@ class Transcriptor:
     entre pistas de la misma sesión.
     """
 
-    def __init__(self, modelo: str = "large-v3", idioma: str = "Spanish") -> None:
+    def __init__(
+        self,
+        modelo: str = "large-v3",
+        idioma: str = "es",
+        dispositivo: str = "auto",
+        precision: str = "float16",
+    ) -> None:
         self.nombre_modelo = modelo
         self.idioma = idioma
+        self._dispositivo = dispositivo
+        self._precision = precision
         self._modelo = None
 
     def cargar(self, avisar: Callable[[str], None] | None = None) -> None:
-        """Carga el modelo en memoria (descarga la primera vez que se usa)."""
+        """Carga el modelo en memoria (lo descarga la primera vez que se usa)."""
         if self._modelo is not None:
             return
         if avisar:
-            avisar(f"Cargando modelo Whisper '{self.nombre_modelo}'...")
+            avisar(
+                f"Cargando modelo '{self.nombre_modelo}' "
+                f"({self._dispositivo}, {self._precision})..."
+            )
 
-        import whisper  # import perezoso: tarda y sólo hace falta al transcribir
+        # Import perezoso: tarda y sólo hace falta al transcribir de verdad.
+        from faster_whisper import WhisperModel
 
-        self._modelo = whisper.load_model(self.nombre_modelo)
+        try:
+            self._modelo = WhisperModel(
+                self.nombre_modelo,
+                device=self._dispositivo,
+                compute_type=self._precision,
+            )
+        except Exception as exc:  # noqa: BLE001 - el mensaje original es críptico
+            raise ErrorTranscripcion(
+                f"No se pudo cargar el modelo '{self.nombre_modelo}' "
+                f"en {self._dispositivo} con precisión {self._precision}: {exc}"
+            ) from exc
 
     def dispositivo(self) -> str:
-        """'cuda' o 'cpu', según dónde haya quedado cargado el modelo."""
-        if self._modelo is None:
-            return "desconocido"
-        try:
-            return str(next(self._modelo.parameters()).device)
-        except (StopIteration, AttributeError):
-            return "desconocido"
+        """Dónde se está ejecutando la transcripción."""
+        return self._dispositivo
 
     def transcribir(
         self,
@@ -247,7 +296,7 @@ class Transcriptor:
         avisar: Callable[[str], None] | None = None,
     ) -> list[Segmento]:
         """Transcribe una pista y devuelve sus segmentos ya limpios."""
-        # Whisper lanza ffmpeg por su cuenta; si no está, el error que da es
+        # El motor lanza ffmpeg por su cuenta; si no está, el error que da es
         # un "WinError 2" que no menciona ffmpeg. Mejor detectarlo aquí.
         estado_ffmpeg = dependencias.comprobar_ffmpeg()
         if not estado_ffmpeg.disponible:
@@ -260,11 +309,27 @@ class Transcriptor:
             avisar(f"Transcribiendo pista de {hablante}...")
 
         try:
-            resultado = self._modelo.transcribe(
+            segmentos_crudos, _info = self._modelo.transcribe(
                 str(ruta),
                 language=self.idioma,
-                verbose=False,
+                # Detección de voz: no se transcribe el silencio, que es la
+                # mayor parte de la pista de cada jugador y la causa principal
+                # de las alucinaciones.
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": MIN_SILENCIO_MS},
             )
+            # `transcribe` devuelve un generador perezoso: la transcripción
+            # real ocurre al recorrerlo.
+            crudos = [
+                {
+                    "start": seg.start,
+                    "end": seg.end,
+                    "text": seg.text,
+                    "no_speech_prob": seg.no_speech_prob,
+                    "avg_logprob": seg.avg_logprob,
+                }
+                for seg in segmentos_crudos
+            ]
         except FileNotFoundError as exc:
             # Casi siempre significa que ffmpeg desapareció del PATH.
             raise ErrorTranscripcion(
@@ -277,7 +342,7 @@ class Transcriptor:
             ) from exc
 
         duracion = duracion_audio(ruta)
-        return filtrar_segmentos(resultado.get("segments", []), duracion, hablante)
+        return filtrar_segmentos(crudos, duracion, hablante)
 
 
 def guardar_transcripcion(segmentos: list[Segmento], destino: Path) -> None:

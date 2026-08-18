@@ -72,11 +72,9 @@ class Ventana:
         ttk.Label(
             marco, text="Rolsumen", font=("Segoe UI", 15, "bold")
         ).pack(anchor=tk.W)
-        ttk.Label(
-            marco,
-            text="Crónicas automáticas de tus sesiones de rol",
-            foreground=COLOR_NEUTRO,
-        ).pack(anchor=tk.W, pady=(0, 10))
+        self.subtitulo = ttk.Label(marco, text="", foreground=COLOR_NEUTRO)
+        self.subtitulo.pack(anchor=tk.W, pady=(0, 10))
+        self._pintar_subtitulo()
 
         # --- Estado de los servicios ---
         caja = ttk.LabelFrame(marco, text="Servicios", padding=10)
@@ -131,6 +129,15 @@ class Ventana:
         self.estado.pack(side=tk.RIGHT)
 
         self.progreso = ttk.Progressbar(marco, mode="indeterminate")
+
+    def _pintar_subtitulo(self) -> None:
+        """Deja claro de un vistazo qué tipo de resumen se va a generar."""
+        descripciones = {
+            "rol": "Crónicas de partidas de rol",
+            "conversacion": "Resúmenes de conversaciones",
+        }
+        descripcion = descripciones.get(self.configuracion.modo, "Resúmenes")
+        self.subtitulo.config(text=f"{descripcion}  ·  modo: {self.configuracion.modo}")
 
     # -------------------------------------------------------------- bucles --
 

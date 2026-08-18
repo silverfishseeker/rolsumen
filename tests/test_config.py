@@ -14,9 +14,9 @@ def escribir(tmp_path: Path, contenido: str) -> Path:
 def test_sin_archivo_usa_valores_por_defecto(tmp_path):
     configuracion = cfg.cargar(tmp_path / "no_existe.ini")
 
-    assert configuracion.modelo_whisper == "large-v3"
-    assert configuracion.modelo_ollama == "qwen3:8b"
-    assert configuracion.idioma == "Spanish"
+    assert configuracion.modelos.transcripcion == "large-v3"
+    assert configuracion.modelos.resumen == "qwen3:8b"
+    assert configuracion.idioma == "es"
     assert configuracion.carpeta_resumenes_extra is None
 
 
@@ -92,14 +92,50 @@ def test_jugador_con_valor_vacio_se_ignora(tmp_path):
 def test_modelos_configurables(tmp_path):
     ruta = escribir(
         tmp_path,
-        "[general]\nmodelo_whisper = medium\nmodelo_ollama = llama3\nidioma = English\n",
+        "[general]\nidioma = en\n"
+        "[modelos]\ntranscripcion = medium\nresumen = llama3\n"
+        "precision = int8\ndispositivo = cpu\ncontexto_resumen = 8192\n",
     )
 
     configuracion = cfg.cargar(ruta)
 
-    assert configuracion.modelo_whisper == "medium"
-    assert configuracion.modelo_ollama == "llama3"
-    assert configuracion.idioma == "English"
+    assert configuracion.modelos.transcripcion == "medium"
+    assert configuracion.modelos.resumen == "llama3"
+    assert configuracion.modelos.precision == "int8"
+    assert configuracion.modelos.dispositivo == "cpu"
+    assert configuracion.modelos.contexto_resumen == 8192
+    assert configuracion.idioma == "en"
+
+
+def test_dispositivo_explicito_manda_sobre_auto(tmp_path):
+    ruta = escribir(tmp_path, "[modelos]\ndispositivo = cpu\n")
+
+    assert cfg.cargar(ruta).modelos.dispositivo_efectivo() == "cpu"
+
+
+def test_en_cpu_la_precision_float16_baja_a_int8(tmp_path):
+    # float16 no existe en CPU; degradarlo evita un fallo al cargar el modelo.
+    ruta = escribir(tmp_path, "[modelos]\ndispositivo = cpu\nprecision = float16\n")
+
+    assert cfg.cargar(ruta).modelos.precision_efectiva() == "int8"
+
+
+def test_en_gpu_se_respeta_la_precision(tmp_path):
+    ruta = escribir(tmp_path, "[modelos]\ndispositivo = cuda\nprecision = float16\n")
+
+    assert cfg.cargar(ruta).modelos.precision_efectiva() == "float16"
+
+
+def test_contexto_invalido_cae_al_valor_por_defecto(tmp_path):
+    ruta = escribir(tmp_path, "[modelos]\ncontexto_resumen = no_es_un_numero\n")
+
+    assert cfg.cargar(ruta).modelos.contexto_resumen == 16384
+
+
+def test_campo_vacio_no_pisa_el_valor_por_defecto(tmp_path):
+    ruta = escribir(tmp_path, "[modelos]\ntranscripcion =\n")
+
+    assert cfg.cargar(ruta).modelos.transcripcion == "large-v3"
 
 
 def test_crear_config_si_falta(tmp_path):
@@ -120,4 +156,5 @@ def test_el_config_creado_es_valido_y_no_configura_nada(tmp_path):
     # Recién creado debe comportarse como "sin configurar".
     assert configuracion.carpeta_resumenes_extra is None
     assert configuracion.jugadores == {}
-    assert configuracion.modelo_whisper == "large-v3"
+    assert configuracion.modelos.transcripcion == "large-v3"
+    assert configuracion.modelos.resumen == "qwen3:8b"

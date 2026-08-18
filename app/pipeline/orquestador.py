@@ -15,7 +15,12 @@ from .. import craig_client
 from ..craig_client import ErrorCraig, Grabacion
 from . import combinador, resumidor, troceador
 from .registro import Registro
-from .transcriptor import ErrorTranscripcion, Transcriptor, guardar_transcripcion
+from .transcriptor import (
+    ErrorTranscripcion,
+    Transcriptor,
+    cargar_transcripcion,
+    guardar_transcripcion,
+)
 
 Avisar = Callable[[str], None]
 
@@ -32,6 +37,49 @@ class ResultadoProceso:
 
 def _no_avisar(_: str) -> None:
     """Callback por defecto: no hacer nada."""
+
+
+def _mapa_hablantes(
+    id_grabacion: str, configuracion: cfg.Config, avisar: Avisar = _no_avisar
+) -> dict[str, str]:
+    """Traduce el identificador de cada pista al nombre que verá el lector.
+
+    Hay dos saltos encadenados:
+
+        número de pista  ->  usuario de Discord  ->  nombre del personaje
+
+    El primero lo da Craig (las pistas del `cook` self-hosted se llaman `1`,
+    `2`, `3`); el segundo, el mapeo opcional de `config.ini`. Si falta
+    cualquiera de los dos, se usa lo que haya: antes el usuario de Discord que
+    un número, y antes un número que nada.
+    """
+    mapa: dict[str, str] = {}
+
+    numero_a_usuario = craig_client.usuarios(id_grabacion)
+    if numero_a_usuario:
+        avisar(f"Participantes: {', '.join(sorted(numero_a_usuario.values()))}")
+    else:
+        avisar("Aviso: no se pudo identificar a los participantes de la grabación.")
+
+    for numero, usuario in numero_a_usuario.items():
+        mapa[numero] = configuracion.nombre_personaje(usuario)
+
+    # Un usuario puede venir ya con nombre en la pista (ZIP de la web pública).
+    for usuario, personaje in configuracion.jugadores.items():
+        mapa.setdefault(usuario, personaje)
+
+    return mapa
+
+
+def _crear_transcriptor(configuracion: cfg.Config) -> Transcriptor:
+    """Construye el transcriptor con los ajustes del usuario."""
+    modelos = configuracion.modelos
+    return Transcriptor(
+        modelo=modelos.transcripcion,
+        idioma=configuracion.idioma,
+        dispositivo=modelos.dispositivo_efectivo(),
+        precision=modelos.precision_efectiva(),
+    )
 
 
 def _formatear_duracion(segundos: float) -> str:
@@ -95,9 +143,7 @@ def procesar_grabacion(
             avisar(f"{len(pistas)} pista(s) de audio encontradas.")
 
             # 3. Transcribir cada pista.
-            transcriptor = transcriptor or Transcriptor(
-                modelo=configuracion.modelo_whisper, idioma=configuracion.idioma
-            )
+            transcriptor = transcriptor or _crear_transcriptor(configuracion)
             pistas_transcritas = []
             for numero, pista in enumerate(pistas, start=1):
                 avisar(f"Transcribiendo pista {numero} de {len(pistas)}...")
@@ -112,7 +158,8 @@ def procesar_grabacion(
         # 4. Combinar en una única línea de tiempo.
         avisar("Combinando las pistas en una línea de tiempo...")
         linea = combinador.combinar(
-            pistas_transcritas, mapa_personajes=configuracion.jugadores
+            pistas_transcritas,
+            mapa_personajes=_mapa_hablantes(grabacion.id, configuracion, avisar),
         )
         if not linea:
             raise ErrorTranscripcion(
@@ -141,7 +188,9 @@ def procesar_grabacion(
                     sorted({seg.hablante for seg in linea})
                 ),
             },
-            modelo=configuracion.modelo_ollama,
+            modelo=configuracion.modelos.resumen,
+            contexto=configuracion.modelos.contexto_resumen,
+            modo=configuracion.modo,
             avisar=avisar,
         )
 
@@ -196,9 +245,7 @@ def procesar_pendientes(
     avisar(f"{len(pendientes)} grabación(es) pendiente(s).")
 
     # Un único transcriptor para todas: cargar el modelo es lo más lento.
-    transcriptor = Transcriptor(
-        modelo=configuracion.modelo_whisper, idioma=configuracion.idioma
-    )
+    transcriptor = _crear_transcriptor(configuracion)
 
     resultados: list[ResultadoProceso] = []
     for grabacion in pendientes:
@@ -217,6 +264,90 @@ def procesar_pendientes(
             registro.marcar_error(grabacion.id, resultado.error)
 
     return resultados
+
+
+def sesiones_transcritas() -> list[str]:
+    """Etiquetas de las sesiones que ya tienen transcripción guardada."""
+    if not cfg.DIR_TRANSCRIPCIONES.exists():
+        return []
+    return sorted(
+        carpeta.name
+        for carpeta in cfg.DIR_TRANSCRIPCIONES.iterdir()
+        if carpeta.is_dir() and any(carpeta.glob("*.json"))
+    )
+
+
+def reprocesar(
+    etiqueta: str,
+    configuracion: cfg.Config,
+    avisar: Avisar = _no_avisar,
+) -> ResultadoProceso:
+    """Regenera la crónica de una sesión ya transcrita.
+
+    Se salta la extracción del audio y la transcripción, que son las fases
+    lentas, y rehace sólo el combinado y el resumen. Sirve para afinar los
+    prompts o el mapeo de personajes y ver el resultado en un minuto en vez de
+    volver a transcribir horas de audio.
+    """
+    carpeta = cfg.DIR_TRANSCRIPCIONES / etiqueta
+    archivos = sorted(carpeta.glob("*.json"))
+
+    if not archivos:
+        return ResultadoProceso(
+            id_grabacion=etiqueta,
+            ok=False,
+            error=f"No hay transcripciones guardadas en {carpeta}.",
+        )
+
+    # La etiqueta es "<fecha>_<id>"; el id es lo que va detrás del primer '_'.
+    id_grabacion = etiqueta.split("_", 1)[-1]
+    fecha = etiqueta.split("_", 1)[0]
+
+    try:
+        avisar(f"Cargando {len(archivos)} pista(s) transcrita(s)...")
+        pistas = [cargar_transcripcion(archivo) for archivo in archivos]
+
+        linea = combinador.combinar(
+            pistas,
+            mapa_personajes=_mapa_hablantes(id_grabacion, configuracion, avisar),
+        )
+        if not linea:
+            raise ErrorTranscripcion("Las transcripciones guardadas están vacías.")
+
+        (carpeta / "linea_de_tiempo.txt").write_text(
+            combinador.a_texto(linea), encoding="utf-8"
+        )
+
+        bloques = troceador.trocear(linea)
+        avisar(f"Transcripción dividida en {len(bloques)} tramo(s).")
+
+        resultado = resumidor.resumir(
+            bloques,
+            titulo=f"Sesión del {fecha}",
+            metadatos={
+                "Fecha": fecha,
+                "Duración": _formatear_duracion(linea[-1].fin),
+                "Participantes": ", ".join(sorted({s.hablante for s in linea})),
+            },
+            modelo=configuracion.modelos.resumen,
+            contexto=configuracion.modelos.contexto_resumen,
+            modo=configuracion.modo,
+            avisar=avisar,
+        )
+
+        ruta = _guardar_resumen(
+            resultado.documento,
+            f"{etiqueta}.md",
+            configuracion.destinos_resumen(),
+            avisar,
+        )
+        avisar(f"Crónica guardada en {ruta}")
+
+        return ResultadoProceso(id_grabacion=etiqueta, ok=True, resumen=ruta)
+
+    except (ErrorTranscripcion, resumidor.ErrorOllama, OSError) as exc:
+        avisar(f"ERROR: {exc}")
+        return ResultadoProceso(id_grabacion=etiqueta, ok=False, error=str(exc))
 
 
 def limpiar_temporales() -> None:

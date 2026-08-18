@@ -15,5 +15,5 @@ datos/
 # Contiene además los tokens de Discord en install.config.
 app/craig/
 
-# Configuración local del usuario
-app/config.ini
+# Configuración local del usuario (contiene los secretos de Discord)
+config.ini
