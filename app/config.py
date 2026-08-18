@@ -17,7 +17,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 RUTA_CONFIG = RAIZ / "config.ini"
 
 # Plantillas de los prompts, editables sin tocar el código.
-DIR_PROMPTS = RAIZ / "prompts"
+DIR_PROMPTS = RAIZ / "app" / "prompts"
 
 # Carpetas internas: no configurables, siempre en el mismo sitio.
 DIR_DATOS = RAIZ / "datos"
@@ -59,12 +59,9 @@ id_aplicacion = 1539028879342047263
 # Qué tipo de resumen generar. Cada modo usa sus propios prompts, que están
 # en la carpeta prompts/<modo>/ y se pueden editar.
 #
-#   rol           Crónica de partida de rol. Recoge solo la acción DENTRO de
-#                 la ficción e ignora la charla de la mesa (reglas, tiradas,
-#                 bromas, temas ajenos).
-#   conversacion  Resumen de una conversación normal. Recoge todo lo que se
-#                 habló, sin filtrar nada por ser informal.
-modo = rol
+# Modos permitidos:
+{modos}
+modo = {modo_por_defecto}
 
 # Carpeta ADICIONAL donde copiar los resúmenes.
 # Los resúmenes se guardan siempre en datos/resumenes/; si indicas una ruta
@@ -162,9 +159,43 @@ class Modelos:
         return self.precision
 
 
-# Modos de resumen disponibles. Cada uno tiene su carpeta en prompts/.
-MODOS = ("rol", "conversacion")
+# Modos de resumen disponibles, con la descripción que se vuelca en el
+# config.ini. Añadir uno aquí basta para que aparezca documentado en el
+# archivo de configuración: así la lista no puede quedarse desfasada.
+DESCRIPCION_MODOS = {
+    "rol": (
+        "Crónica de partida de rol. Recoge solo la acción DENTRO de la "
+        "ficción e ignora la charla de la mesa (reglas, tiradas, bromas, "
+        "temas ajenos a la partida)."
+    ),
+    "conversacion": (
+        "Resumen de una conversación normal. Recoge todos los temas que se "
+        "trataron, sin descartar ninguno por informal, pero condensándolos."
+    ),
+}
+
+MODOS = tuple(DESCRIPCION_MODOS)
 MODO_POR_DEFECTO = "rol"
+
+
+def _comentario_modos(ancho: int = 76) -> str:
+    """Genera la lista de modos que se escribe como comentario en config.ini.
+
+    Se construye a partir de DESCRIPCION_MODOS para que la lista del archivo
+    no pueda quedarse desfasada respecto a los modos que existen de verdad.
+    """
+    import textwrap
+
+    # '#' + 3 espacios + nombre (13) + 1 espacio = la descripción empieza aquí.
+    columna = 18
+    sangria = " " * (columna - 1)  # el '#' ocupa la primera posición
+
+    lineas = []
+    for nombre, descripcion in DESCRIPCION_MODOS.items():
+        envuelto = textwrap.wrap(descripcion, width=ancho - columna)
+        lineas.append(f"#   {nombre:<13} {envuelto[0]}")
+        lineas.extend(f"#{sangria}{resto}" for resto in envuelto[1:])
+    return "\n".join(lineas)
 
 
 @dataclass
@@ -190,6 +221,13 @@ class Config:
         return destinos
 
 
+def plantilla_config() -> str:
+    """El contenido del config.ini por defecto, con los modos ya listados."""
+    return CONFIG_EJEMPLO.format(
+        modos=_comentario_modos(), modo_por_defecto=MODO_POR_DEFECTO
+    )
+
+
 def crear_config_si_falta(ruta: Path = RUTA_CONFIG) -> bool:
     """Crea el archivo de configuración con valores por defecto si no existe.
 
@@ -198,7 +236,7 @@ def crear_config_si_falta(ruta: Path = RUTA_CONFIG) -> bool:
     if ruta.exists():
         return False
     ruta.parent.mkdir(parents=True, exist_ok=True)
-    ruta.write_text(CONFIG_EJEMPLO, encoding="utf-8")
+    ruta.write_text(plantilla_config(), encoding="utf-8")
     return True
 
 

@@ -156,11 +156,6 @@ rolsumen/
 ├── .gitignore
 ├── config.ini              # ÚNICO archivo a configurar (ignorado por git)
 │
-├── prompts/                # instrucciones del modelo, editables
-│   ├── cronologia.txt
-│   ├── cabecera.txt
-│   └── LEEME.md
-│
 ├── app/
 │   ├── main.py             # punto de entrada (GUI, o --consola)
 │   ├── gui.py              # ventana: estado de servicios y progreso
@@ -169,6 +164,12 @@ rolsumen/
 │   ├── docker_manager.py   # levanta y baja Craig
 │   ├── craig_client.py     # consulta grabaciones y ejecuta el "cook"
 │   ├── instalar_craig.py   # descarga y prepara Craig (una vez)
+│   ├── diagnostico.py      # revisa los requisitos y dice qué falla
+│   │
+│   ├── prompts/            # instrucciones del modelo, editables
+│   │   ├── rol/            #   cronologia.txt + cabecera.txt
+│   │   ├── conversacion/   #   cronologia.txt + cabecera.txt
+│   │   └── LEEME.md
 │   │
 │   ├── pipeline/
 │   │   ├── tipos.py        # Segmento y Bloque
@@ -187,8 +188,7 @@ rolsumen/
 │   ├── resumenes/          # crónicas generadas
 │   └── procesadas.json     # registro de idempotencia
 │
-├── tests/                  # 125 tests, se ejecutan con pytest
-└── pruebas/                # material de prueba suelto (ignorado por git)
+└── tests/                  # 263 tests, se ejecutan con pytest
 ```
 
 `app/craig/` no forma parte del repositorio: es un proyecto aparte que se descarga con `python -m app.instalar_craig`, y además contiene los tokens de Discord.
@@ -240,14 +240,14 @@ Un modo desconocido en `config.ini` no rompe nada: se usa `rol`.
 
 ## Prompts
 
-Las instrucciones que recibe el modelo de lenguaje **no están en el código**: viven en `prompts/<modo>/`, como archivos de texto que se pueden editar para ajustar el estilo o el nivel de detalle sin tocar Python. Se releen en cada resumen, así que se puede afinar el prompt y volver a probar sin reiniciar.
+Las instrucciones que recibe el modelo de lenguaje **no están en el código**: viven en `app/prompts/<modo>/`, como archivos de texto que se pueden editar para ajustar el estilo o el nivel de detalle sin tocar Python. Se releen en cada resumen, así que se puede afinar el prompt y volver a probar sin reiniciar.
 
 | Archivo | Qué controla |
 |---|---|
-| `prompts/<modo>/cronologia.txt` | Cómo se convierte cada tramo de transcripción en resumen. Es el que más influye en el resultado. |
-| `prompts/<modo>/cabecera.txt` | La cabecera del documento. |
+| `app/prompts/<modo>/cronologia.txt` | Cómo se convierte cada tramo de transcripción en resumen. Es el que más influye en el resultado. |
+| `app/prompts/<modo>/cabecera.txt` | La cabecera del documento. |
 
-Si a un modo le falta un archivo se usa el de `rol/`, y si tampoco está, una versión interna por defecto — así nada se rompe por borrar un archivo. Para probar un cambio sin volver a transcribir, `--rehacer` (ver *Instalación*). Más detalle en `prompts/LEEME.md`.
+Si a un modo le falta un archivo se usa el de `rol/`, y si tampoco está, una versión interna por defecto — así nada se rompe por borrar un archivo. Para probar un cambio sin volver a transcribir, `--rehacer` (ver *Instalación*). Más detalle en `app/prompts/LEEME.md`.
 
 ## Requisitos
 
