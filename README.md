@@ -26,6 +26,44 @@ El resumen debe centrarse en la **acción dentro del rol** e ignorar la charla f
 
 Los pasos 2 y 3 se hacen en Discord y son necesariamente manuales (ver *Decisiones de diseño*). Todo lo demás es automático.
 
+## Instalación y puesta en marcha
+
+```bash
+# 1. Descargar y preparar Craig (una sola vez)
+python -m app.instalar_craig
+
+# 2. Rellenar las credenciales de Discord en app/config.ini, sección [discord]
+#    (el identificador de la aplicación ya viene puesto)
+
+# 3. Abrir la aplicación
+python -m app.main
+```
+
+`app/config.ini` es el **único** archivo que hay que tocar. Las credenciales van ahí:
+
+```ini
+[discord]
+token_bot =            ; pestaña "Bot" -> "Reset Token"
+secreto_cliente =      ; pestaña "OAuth2" -> "Reset Secret"
+id_aplicacion = 1539028879342047263   ; "General Information" -> Application ID
+```
+
+La aplicación las copia sola al `install.config` interno de Craig antes de arrancarlo, así que ese archivo es un detalle de implementación que no hay que mantener a mano. `config.ini` está en el `.gitignore`, de modo que los secretos no acaban en el repositorio.
+
+Al hacerlo, se aplican también los ajustes que Craig necesita para funcionar dentro de Docker: su `install.config.example` apunta la base de datos a `localhost:5432`, que **no funciona** dentro de un contenedor, y debe ser `db:5432` (el nombre del servicio en `docker-compose.yml`). Lo mismo con Redis.
+
+Modo consola, útil para depurar sin la ventana de por medio:
+
+```bash
+python -m app.main --consola
+```
+
+Tests:
+
+```bash
+python -m pytest tests/ -q
+```
+
 ## Arquitectura
 
 ```
@@ -100,36 +138,46 @@ rolsumen/
 ├── README.md
 ├── .gitignore
 │
-├── app/                    # código e infraestructura
-│   ├── main.py             # punto de entrada (abre la GUI)
-│   ├── gui.py              # ventana: estado y progreso
-│   ├── orchestrator.py     # coordina el pipeline
-│   ├── docker_manager.py   # docker compose up/down
-│   ├── config.py           # lee/escribe config.ini
-│   ├── config.ini          # ajustes de usuario
+├── app/
+│   ├── main.py             # punto de entrada (GUI, o --consola)
+│   ├── gui.py              # ventana: estado de servicios y progreso
+│   ├── config.py           # configuración y rutas del proyecto
+│   ├── dependencias.py     # localiza ffmpeg y comprueba la GPU
+│   ├── docker_manager.py   # levanta y baja Craig
+│   ├── craig_client.py     # consulta grabaciones y ejecuta el "cook"
+│   ├── instalar_craig.py   # descarga y prepara Craig (una vez)
 │   │
-│   └── craig/              # Craig self-hosted
-│       ├── docker-compose.yml
-│       ├── install.config  # tokens de Discord (ignorado por git)
-│       └── rec/            # grabaciones (ignorado por git)
+│   ├── pipeline/
+│   │   ├── tipos.py        # Segmento y Bloque
+│   │   ├── transcriptor.py # Whisper + filtrado de alucinaciones
+│   │   ├── combinador.py   # une las pistas en una línea de tiempo
+│   │   ├── troceador.py    # troceado adaptativo con corte en pausas
+│   │   ├── resumidor.py    # Ollama: crónica en dos fases
+│   │   ├── registro.py     # qué se ha procesado ya (idempotencia)
+│   │   └── orquestador.py  # encadena todo lo anterior
+│   │
+│   └── craig/              # Craig self-hosted (ignorado por git)
 │
 ├── datos/                  # generado por la app (ignorado por git)
-│   ├── grabaciones/
-│   ├── transcripciones/
-│   └── resumenes/
+│   ├── grabaciones/        # ZIP de audio ya procesado
+│   ├── transcripciones/    # transcripciones y línea de tiempo
+│   ├── resumenes/          # crónicas generadas
+│   └── procesadas.json     # registro de idempotencia
 │
-├── tests/                  # tests a ejecutar durante el desarrollo
-└── pruebas/                # pruebas manuales sueltas (ignorado por git)
+├── tests/                  # 125 tests, se ejecutan con pytest
+└── pruebas/                # material de prueba suelto (ignorado por git)
 ```
 
-Los nombres de los `.py` son orientativos: se ajustan al programar, y una parte solo pasa a subcarpeta si necesita más de un archivo.
+`app/craig/` no forma parte del repositorio: es un proyecto aparte que se descarga con `python -m app.instalar_craig`, y además contiene los tokens de Discord.
 
 ## Configuración
 
-`app/config.ini` — pensado para requerir el mínimo posible:
+`app/config.ini` es el único archivo de configuración. Solo la sección `[discord]` es obligatoria; el resto tiene valores por defecto razonables.
 
+- **`[discord]`** — credenciales de la aplicación de Discord (ver *Instalación*). Se vuelcan solas en la configuración interna de Craig.
 - **Carpeta de resúmenes** (opcional). Los resúmenes se guardan **siempre** en `datos/resumenes/`; si se indica una ruta aquí, se guarda **además** una copia allí.
 - **Mapeo de jugadores** (opcional). Asocia cada usuario de Discord con el nombre de su personaje. Por defecto se usan los nicks de Discord tal cual.
+- **Modelos** (opcional). `modelo_whisper` (por defecto `large-v3`) y `modelo_ollama` (por defecto `qwen3:8b`).
 
 ## Requisitos
 
@@ -151,7 +199,37 @@ Para Whisper con GPU hay que instalar PyTorch con CUDA explícitamente:
 pip install torch --index-url https://download.pytorch.org/whl/cu128 --upgrade
 ```
 
+## Cómo se obtienen las grabaciones de Craig
+
+Craig **no** deja las pistas ya separadas. En `rec/` guarda, por cada grabación:
+
+```
+<ID>.ogg.header1   <ID>.ogg.header2   <ID>.ogg.data   ...
+```
+
+que son flujos OGG **multiplexados**, con todos los usuarios dentro del mismo archivo. Para obtener una pista por jugador hay que pasar por el proceso *cook* que trae el propio Craig:
+
+```
+./cook.sh <ID> flac zip
+```
+
+`cook.sh` escribe el ZIP por su **salida estándar**, y ese ZIP contiene exactamente lo mismo que se descarga desde la web de Craig: un `.flac` por jugador más `info.txt` y `raw.dat`. La aplicación lo invoca con `docker compose exec`.
+
+Para saber **qué grabaciones han terminado** se consulta la base de datos: la tabla `Recording` tiene una columna `endedAt` que solo se rellena al finalizar. Esto evita tener que adivinar por el tamaño o la fecha de los archivos.
+
+Consecuencia práctica: **no hace falta montar `rec/` en el host**. La aplicación nunca lee esa carpeta directamente — pregunta a la base de datos y pide el audio por `cook.sh`. Por eso el `docker-compose.yml` de Craig se usa tal cual, sin modificaciones.
+
+## Hallazgos de las pruebas
+
+Cosas que se descubrieron probando y que condicionan el código:
+
+**Whisper alucina sobre el silencio.** Con audio casi mudo, `large-v3` inventa muletillas como `"Gracias."` que ninguna lista de frases conocidas cubre de forma fiable (la gente también da las gracias de verdad). La señal utilizable es la que el propio Whisper adjunta a cada segmento: `no_speech_prob` y `avg_logprob`. Se descarta un segmento solo cuando **fallan ambas**, usando los mismos umbrales que Whisper aplica internamente (`0.6` y `-1.0`). Filtrar por una sola de las dos se cargaría frases cortas legítimas.
+
+**`ffmpeg` fuera del PATH da un error indescifrable.** Whisper lanza `ffmpeg` como proceso aparte; si no está en el PATH, el error es `[WinError 2] El sistema no puede encontrar el archivo especificado`, que no menciona ffmpeg por ningún lado. Pasa con facilidad en Windows: al instalarlo con winget, el PATH del sistema cambia pero los procesos ya abiertos siguen con el antiguo. `app/dependencias.py` lo busca también en las rutas habituales de instalación y lo añade al PATH del proceso, y si de verdad falta, da un mensaje que dice qué instalar.
+
+**El troceado tiene que cortar en pausas.** Ver *Decisiones de diseño*. Además el resumidor traduce mecánica a ficción: sin instrucción explícita, el modelo escribía *"Kaelen sacó un 20 en percepción"* en vez de *"Kaelen distinguió dos figuras junto al portón"*.
+
 ## Pendiente
 
-- **Formato de las grabaciones de Craig.** Craig guarda audio crudo en OGG dentro de `rec/`, no FLAC multipista listo: existe un proceso *cook* (`cook/`, `cook.sh`) que convierte al formato descargable. Al montar Craig hay que hacer una grabación de prueba y comprobar qué aparece realmente en `rec/`, para decidir entre invocar el *cook* o transcribir los OGG directamente.
-- Implementación de la aplicación.
+- **Arrancar Craig por primera vez.** Requiere los dos secretos de Discord en `install.config`. Hasta entonces no se ha podido comprobar de verdad el arranque de los contenedores ni una grabación real.
+- **Probar con una sesión larga de verdad.** El troceado en varios bloques y el contexto en cadena están implementados y cubiertos por tests, pero solo se han ejercitado con transcripciones cortas (un único bloque).

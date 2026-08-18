@@ -1,3 +1,4 @@
+# Pruebas manuales sueltas
 pruebas/
 
 # Python
@@ -5,10 +6,14 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+.pytest_cache/
 
-# Datos generados por la app (audio, transcripciones, resúmenes)
+# Datos generados por la app (audio, transcripciones, crónicas)
 datos/
 
-# Craig self-hosted: secretos y grabaciones
-app/craig/install.config
-app/craig/rec/
+# Craig self-hosted: se instala aparte, no forma parte de este repositorio.
+# Contiene además los tokens de Discord en install.config.
+app/craig/
+
+# Configuración local del usuario
+app/config.ini
