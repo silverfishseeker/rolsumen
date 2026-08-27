@@ -1,15 +1,15 @@
-"""Generación de la cronología a partir de la transcripción, usando Ollama.
+"""Generación del documento a partir de la transcripción, usando Ollama.
 
-El documento final NO es un relato: es un acta consultable. Por eso el proceso
-tiene dos fases y ninguna de ellas vuelve a comprimir los hechos ya extraídos:
+El resultado no es un relato sino un acta consultable, y se construye en dos
+fases:
 
-  Fase 1 - Cada bloque produce su tramo de cronología, con secciones por escena.
-           Se encadena el contexto: cada bloque recibe un resumen de lo anterior.
-  Fase 2 - Se genera solo una cabecera (título, sinopsis y personajes) a partir
-           de los tramos ya escritos, y se concatena todo.
+  1. Cada bloque produce su tramo, encadenando el resumen del anterior como
+     contexto para que la narración siga el hilo.
+  2. Se redacta solo la cabecera (sinopsis y listas) a partir de los tramos ya
+     escritos, y se concatena todo.
 
-La fase 2 deliberadamente no reescribe los tramos: en un documento pensado para
-consultar hechos, perder detalle es peor que tener un texto algo más largo.
+La fase 2 no reescribe los tramos a propósito: en un documento para consultar
+hechos, perder detalle es peor que un texto algo más largo.
 """
 
 from __future__ import annotations
@@ -21,34 +21,23 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Callable
 
-from ..config import DIR_PROMPTS, MODO_POR_DEFECTO
+from ..config import CONTEXTO_POR_DEFECTO, DIR_PROMPTS, MODO_POR_DEFECTO
 from .tipos import Bloque
 from .troceador import CARACTERES_POR_TOKEN
 
 URL_OLLAMA = "http://localhost:11434"
 
-# Contexto pedido a Ollama. Por defecto Ollama usa 4096, muy por debajo de lo
-# que necesitamos. El techo no lo marca el modelo (qwen3:8b admite 40960) sino
-# la memoria de vídeo: si el modelo más su caché de atención no caben, Ollama
-# descarga parte a la CPU y la generación se desploma.
-#
-# Medido con qwen3:8b en una GPU de 8 GB:
-#     4096 -> 100% GPU     8192 -> 100% GPU
-#    12288 -> 13% en CPU  16384 -> 20% en CPU
-#
-# Con más memoria de vídeo se puede subir; comprobar con `ollama ps` que sigue
-# marcando 100% GPU.
-CONTEXTO_OLLAMA = 8192
+# El valor y su porqué están en config; aquí solo se reexporta el nombre que
+# usan las funciones de este módulo.
+CONTEXTO_OLLAMA = CONTEXTO_POR_DEFECTO
 
-# Los modelos de razonamiento (qwen3 y similares) generan un bloque <think>
-# antes de responder. Aquí se descarta siempre, así que generarlo es tiempo
-# tirado: en una prueba, el mismo prompt tardó más de 300 s con razonamiento y
-# 19 s sin él. Se desactiva salvo que el modelo no lo admita.
-PENSAR = False
+MODELO_POR_DEFECTO = "qwen3:8b"
 
-# Generoso a propósito: un bloque grande en una GPU modesta puede tardar
-# bastante, y quedarse a medias obliga a repetir toda la sesión.
 TIMEOUT_SEGUNDOS = 1800
+
+# Los modelos de razonamiento generan un bloque <think> que aquí se descarta,
+# así que producirlo es tiempo tirado: medido, >300 s con él y 19 s sin él.
+PENSAR = False
 
 # Baja para favorecer la fidelidad a los hechos frente a la creatividad.
 TEMPERATURA = 0.3
@@ -60,14 +49,18 @@ class ErrorOllama(RuntimeError):
     """Fallo al comunicarse con Ollama."""
 
 
-def cargar_prompt(nombre: str, por_defecto: str, modo: str = MODO_POR_DEFECTO) -> str:
-    """Lee una plantilla de `prompts/<modo>/`, o usa la interna si no está.
+@dataclass
+class ResultadoResumen:
+    documento: str
+    tramos: list[str]
 
-    Se lee en cada llamada a propósito: así se puede afinar el prompt y probar
-    el resultado sin reiniciar la aplicación.
 
-    Si el modo no tiene su archivo, se cae al del modo por defecto antes que a
-    la plantilla interna, para que un modo nuevo a medias siga funcionando.
+def cargar_prompt(nombre: str, modo: str = MODO_POR_DEFECTO) -> str:
+    """Lee una plantilla de `prompts/<modo>/`.
+
+    Se lee en cada llamada a propósito: permite afinar un prompt y volver a
+    probar sin reiniciar. Un modo al que le falte un archivo usa el del modo
+    por defecto, para que uno a medio hacer siga funcionando.
     """
     candidatas = [DIR_PROMPTS / modo / f"{nombre}.txt"]
     if modo != MODO_POR_DEFECTO:
@@ -81,78 +74,17 @@ def cargar_prompt(nombre: str, por_defecto: str, modo: str = MODO_POR_DEFECTO) -
         except (OSError, UnicodeDecodeError):
             continue
 
-    return por_defecto
-
-
-INSTRUCCIONES_BLOQUE_DEFECTO = """\
-Eres un cronista que documenta partidas de rol de mesa. Recibes la \
-transcripción de un tramo de una sesión y escribes lo que ocurrió.
-
-El documento que produces sirve para CONSULTAR HECHOS meses después ("¿a quién \
-matamos en la torre?", "¿qué nos prometió el alcalde?"). No es un relato \
-literario.
-
-Reglas:
-- Escribe solo hechos ocurridos DENTRO de la ficción.
-- IGNORA por completo todo lo que pase en la mesa y no en la ficción: reglas \
-del juego, tiradas de dados y sus resultados, puntos de vida, cálculos, \
-preguntas de los jugadores al máster, bromas, pausas y temas ajenos a la \
-partida.
-- Traduce la mecánica a ficción: si un personaje tira percepción y ve algo, \
-anota lo que el personaje vio, nunca la tirada ni el número obtenido. Escribe \
-"Kaelen distinguió dos figuras junto al portón", no "Kaelen sacó un 20 en \
-percepción".
-- No inventes NADA. Si algo no queda claro en la transcripción, omítelo. No \
-rellenes huecos ni especules sobre intenciones.
-- Sé concreto: nombres propios, lugares, objetos, cantidades, decisiones \
-tomadas y sus consecuencias.
-- Habla siempre de los PERSONAJES, nunca de los jugadores ni de la mesa. \
-Escribe "el grupo acampó", no "los jugadores acamparon".
-- Nada de adornos literarios ni de valoraciones. Frases directas.
-- Organiza el tramo en secciones con encabezado `### ` por escena o situación. \
-Dentro de cada sección, viñetas con los hechos en orden cronológico.
-- Escribe en español, en pasado.
-
-Devuelve únicamente el texto en Markdown, sin explicaciones sobre tu trabajo.
-"""
-
-INSTRUCCIONES_CABECERA_DEFECTO = """\
-Eres un cronista que documenta partidas de rol de mesa. Recibes la crónica ya \
-escrita de una sesión y debes redactar SOLO su cabecera.
-
-Devuelve exactamente estas tres secciones en Markdown, y nada más:
-
-## Sinopsis
-Un párrafo breve (3-5 frases) con lo esencial de la sesión.
-
-## Personajes y criaturas
-Lista con viñetas de los personajes, criaturas y facciones que aparecen, cada \
-uno con una descripción de una línea. Solo los que aparecen en la crónica.
-
-## Lugares
-Lista con viñetas de los lugares visitados o mencionados, cada uno con una \
-línea. Solo los que aparecen en la crónica.
-
-No inventes nada que no esté en la crónica. No repitas la cronología completa. \
-Escribe en español.
-"""
-
-
-@dataclass
-class ResultadoResumen:
-    """Cronología final y sus tramos intermedios."""
-
-    documento: str
-    tramos: list[str]
+    raise FileNotFoundError(
+        f"Falta el prompt '{nombre}' del modo '{modo}'. "
+        f"Debería estar en {candidatas[0]}."
+    )
 
 
 def _limpiar(texto: str) -> str:
-    """Quita los bloques de razonamiento que emiten los modelos tipo Qwen3."""
     return _PATRON_PENSAMIENTO.sub("", texto).strip()
 
 
 def ollama_disponible(url: str = URL_OLLAMA, timeout: float = 3.0) -> bool:
-    """Comprueba si el servicio de Ollama responde."""
     try:
         with urllib.request.urlopen(f"{url}/api/tags", timeout=timeout) as respuesta:
             return respuesta.status == 200
@@ -161,7 +93,6 @@ def ollama_disponible(url: str = URL_OLLAMA, timeout: float = 3.0) -> bool:
 
 
 def modelos_disponibles(url: str = URL_OLLAMA, timeout: float = 5.0) -> list[str]:
-    """Lista los modelos instalados en Ollama."""
     try:
         with urllib.request.urlopen(f"{url}/api/tags", timeout=timeout) as respuesta:
             datos = json.loads(respuesta.read().decode("utf-8"))
@@ -170,67 +101,14 @@ def modelos_disponibles(url: str = URL_OLLAMA, timeout: float = 5.0) -> list[str
         return []
 
 
-def generar(
-    prompt: str,
-    modelo: str = "qwen3:8b",
-    url: str = URL_OLLAMA,
-    contexto: int = CONTEXTO_OLLAMA,
-    timeout: int = TIMEOUT_SEGUNDOS,
-) -> str:
-    """Llama a Ollama y devuelve la respuesta generada, ya limpia."""
-    peticion = _peticion(prompt, modelo, url, contexto, pensar=PENSAR)
-
-    try:
-        with urllib.request.urlopen(peticion, timeout=timeout) as respuesta:
-            datos = json.loads(respuesta.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detalle = exc.read().decode("utf-8", errors="replace")
-        # Las versiones antiguas de Ollama no conocen el parámetro `think`.
-        if exc.code == 400 and "think" in detalle.lower():
-            return _generar_sin_pensar_desactivado(
-                prompt, modelo, url, contexto, timeout
-            )
-        raise ErrorOllama(f"Ollama respondió {exc.code}: {detalle}") from exc
-    except TimeoutError as exc:
-        raise ErrorOllama(
-            f"Ollama tardó más de {timeout // 60} minutos en responder. "
-            "El modelo puede ser demasiado grande para esta GPU, o el bloque "
-            "demasiado largo: prueba a bajar 'contexto_resumen' en config.ini "
-            "o a usar un modelo más pequeño."
-        ) from exc
-    except (urllib.error.URLError, OSError) as exc:
-        # urllib envuelve el timeout dentro de URLError, así que hay que
-        # distinguirlo aquí para no mandar al usuario a comprobar si Ollama
-        # está arrancado cuando el problema es que va lento.
-        if isinstance(getattr(exc, "reason", None), TimeoutError) or "timed out" in str(
-            exc
-        ):
-            raise ErrorOllama(
-                f"Ollama tardó más de {timeout // 60} minutos en responder. "
-                "Prueba a bajar 'contexto_resumen' en config.ini o a usar un "
-                "modelo más pequeño."
-            ) from exc
-        raise ErrorOllama(
-            f"No se pudo contactar con Ollama en {url}. ¿Está en marcha? ({exc})"
-        ) from exc
-    except json.JSONDecodeError as exc:
-        raise ErrorOllama(f"Respuesta ilegible de Ollama: {exc}") from exc
-
-    return _limpiar(datos.get("response", ""))
-
-
 def _peticion(
     prompt: str, modelo: str, url: str, contexto: int, pensar: bool | None
 ) -> urllib.request.Request:
-    """Construye la petición a Ollama."""
     cuerpo: dict = {
         "model": modelo,
         "prompt": prompt,
         "stream": False,
-        "options": {
-            "num_ctx": contexto,
-            "temperature": TEMPERATURA,
-        },
+        "options": {"num_ctx": contexto, "temperature": TEMPERATURA},
     }
     if pensar is not None:
         cuerpo["think"] = pensar
@@ -243,23 +121,55 @@ def _peticion(
     )
 
 
-def _generar_sin_pensar_desactivado(
-    prompt: str, modelo: str, url: str, contexto: int, timeout: int
+def _es_timeout(exc: Exception) -> bool:
+    """urllib envuelve los timeouts dentro de URLError, hay que desenvolverlos."""
+    return isinstance(exc, TimeoutError) or isinstance(
+        getattr(exc, "reason", None), TimeoutError
+    ) or "timed out" in str(exc)
+
+
+def _pedir(peticion: urllib.request.Request, timeout: int) -> str:
+    with urllib.request.urlopen(peticion, timeout=timeout) as respuesta:
+        return _limpiar(json.loads(respuesta.read().decode("utf-8")).get("response", ""))
+
+
+def generar(
+    prompt: str,
+    modelo: str = MODELO_POR_DEFECTO,
+    url: str = URL_OLLAMA,
+    contexto: int = CONTEXTO_OLLAMA,
+    timeout: int = TIMEOUT_SEGUNDOS,
 ) -> str:
-    """Reintenta sin el parámetro `think`, para Ollama o modelos que no lo admiten."""
-    peticion = _peticion(prompt, modelo, url, contexto, pensar=None)
     try:
-        with urllib.request.urlopen(peticion, timeout=timeout) as respuesta:
-            datos = json.loads(respuesta.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
-        raise ErrorOllama(f"Ollama falló al generar: {exc}") from exc
-    return _limpiar(datos.get("response", ""))
+        return _pedir(_peticion(prompt, modelo, url, contexto, PENSAR), timeout)
+    except urllib.error.HTTPError as exc:
+        detalle = exc.read().decode("utf-8", errors="replace")
+        if exc.code == 400 and "think" in detalle.lower():
+            # Ollama o modelo antiguo que no conoce el parámetro.
+            try:
+                return _pedir(_peticion(prompt, modelo, url, contexto, None), timeout)
+            except (urllib.error.URLError, OSError, json.JSONDecodeError) as fallo:
+                raise ErrorOllama(f"Ollama falló al generar: {fallo}") from fallo
+        raise ErrorOllama(f"Ollama respondió {exc.code}: {detalle}") from exc
+    except (TimeoutError, urllib.error.URLError, OSError) as exc:
+        if _es_timeout(exc):
+            raise ErrorOllama(
+                f"Ollama tardó más de {timeout // 60} minutos en responder. "
+                "El modelo puede ser demasiado grande para esta GPU, o el bloque "
+                "demasiado largo: prueba a bajar 'contexto_resumen' en config.ini "
+                "o a usar un modelo más pequeño."
+            ) from exc
+        raise ErrorOllama(
+            f"No se pudo contactar con Ollama en {url}. ¿Está en marcha? ({exc})"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise ErrorOllama(f"Respuesta ilegible de Ollama: {exc}") from exc
 
 
 def _prompt_bloque(
     bloque: Bloque, contexto_previo: str | None, modo: str = MODO_POR_DEFECTO
 ) -> str:
-    partes = [cargar_prompt("cronologia", INSTRUCCIONES_BLOQUE_DEFECTO, modo)]
+    partes = [cargar_prompt("cronologia", modo)]
 
     if contexto_previo:
         partes.append(
@@ -275,33 +185,45 @@ def _prompt_bloque(
         f"{bloque.texto()}\n"
         "--- FIN DE LA TRANSCRIPCIÓN ---\n"
     )
-
     return "\n".join(partes)
 
 
 def _resumir_contexto(tramo: str, limite: int = 1500) -> str:
-    """Recorta un tramo para usarlo como contexto del bloque siguiente."""
-    if len(tramo) <= limite:
-        return tramo
-    return "..." + tramo[-limite:]
+    return tramo if len(tramo) <= limite else "..." + tramo[-limite:]
+
+
+def _cronica_para_cabecera(tramos: list[str], contexto: int) -> str:
+    """Junta los tramos sin desbordar el contexto.
+
+    Cuando no caben se recorta cada uno **por igual** en vez de cortar por el
+    final: así la sinopsis sigue cubriendo toda la sesión y no solo su principio.
+    """
+    cronica = "\n\n".join(tramos)
+    presupuesto = int(contexto * CARACTERES_POR_TOKEN * 0.5)
+
+    if len(cronica) <= presupuesto or not tramos:
+        return cronica
+
+    por_tramo = max(200, presupuesto // len(tramos))
+    return "\n\n".join(
+        t if len(t) <= por_tramo else t[:por_tramo] + "\n[...]" for t in tramos
+    )
 
 
 def resumir_bloques(
     bloques: list[Bloque],
-    modelo: str = "qwen3:8b",
+    modelo: str = MODELO_POR_DEFECTO,
     url: str = URL_OLLAMA,
     contexto_modelo: int = CONTEXTO_OLLAMA,
     modo: str = MODO_POR_DEFECTO,
     avisar: Callable[[str], None] | None = None,
 ) -> list[str]:
-    """Fase 1: genera el tramo de cronología de cada bloque, en cadena."""
     tramos: list[str] = []
     anterior: str | None = None
 
     for bloque in bloques:
         if avisar:
             avisar(f"Resumiendo tramo {bloque.indice} de {bloque.total}...")
-
         tramo = generar(
             _prompt_bloque(bloque, anterior, modo),
             modelo=modelo,
@@ -314,60 +236,30 @@ def resumir_bloques(
     return tramos
 
 
-def _cronica_para_cabecera(tramos: list[str], contexto: int) -> str:
-    """Junta los tramos para la cabecera sin desbordar el contexto del modelo.
-
-    La cabecera recibe la crónica entera, así que en una sesión larga puede no
-    caber. Cuando pasa, se recorta cada tramo **por igual** en lugar de cortar
-    por el final: así la sinopsis sigue cubriendo toda la sesión y no solo su
-    principio.
-    """
-    cronica = "\n\n".join(tramos)
-
-    # Sitio para las instrucciones y para la cabecera que se va a generar.
-    presupuesto_caracteres = int(contexto * CARACTERES_POR_TOKEN * 0.5)
-
-    if len(cronica) <= presupuesto_caracteres or not tramos:
-        return cronica
-
-    por_tramo = max(200, presupuesto_caracteres // len(tramos))
-    recortados = [
-        tramo if len(tramo) <= por_tramo else tramo[:por_tramo] + "\n[...]"
-        for tramo in tramos
-    ]
-    return "\n\n".join(recortados)
-
-
 def generar_cabecera(
     tramos: list[str],
-    modelo: str = "qwen3:8b",
+    modelo: str = MODELO_POR_DEFECTO,
     url: str = URL_OLLAMA,
     contexto: int = CONTEXTO_OLLAMA,
     modo: str = MODO_POR_DEFECTO,
     avisar: Callable[[str], None] | None = None,
 ) -> str:
-    """Fase 2: sinopsis, personajes y lugares, a partir de los tramos escritos."""
     if avisar:
         avisar("Redactando sinopsis y elenco...")
 
-    cronica = _cronica_para_cabecera(tramos, contexto)
     prompt = (
-        f"{cargar_prompt('cabecera', INSTRUCCIONES_CABECERA_DEFECTO, modo)}\n"
+        f"{cargar_prompt('cabecera', modo)}\n"
         "--- CRÓNICA DE LA SESIÓN ---\n"
-        f"{cronica}\n"
+        f"{_cronica_para_cabecera(tramos, contexto)}\n"
         "--- FIN DE LA CRÓNICA ---\n"
     )
     return generar(prompt, modelo=modelo, url=url, contexto=contexto)
 
 
 def _reloj(segundos: float) -> str:
-    """Segundos -> 'h:mm' o 'mm:ss' si la sesión dura menos de una hora."""
-    total = int(segundos)
-    horas, resto = divmod(total, 3600)
+    horas, resto = divmod(int(segundos), 3600)
     minutos, segs = divmod(resto, 60)
-    if horas:
-        return f"{horas}:{minutos:02d}:{segs:02d}"
-    return f"{minutos}:{segs:02d}"
+    return f"{horas}:{minutos:02d}:{segs:02d}" if horas else f"{minutos}:{segs:02d}"
 
 
 def componer_documento(
@@ -377,32 +269,27 @@ def componer_documento(
     metadatos: dict[str, str] | None = None,
     bloques: list[Bloque] | None = None,
 ) -> str:
-    """Monta el documento final en Markdown.
+    """Monta el documento final.
 
-    Cada tramo se precede de su franja horaria. Sirve para dos cosas: permite
-    saltar directamente al punto de la grabación donde se dijo algo, y desambigua
-    los encabezados repetidos —cada bloque se resume por separado, así que si la
-    conversación vuelve a un tema, aparecen secciones con títulos parecidos.
+    Cada tramo lleva su franja horaria: permite saltar al punto exacto de la
+    grabación, y desambigua los encabezados parecidos que salen al resumir cada
+    bloque por separado.
     """
     partes = [f"# {titulo}", ""]
 
     if metadatos:
-        for clave, valor in metadatos.items():
-            partes.append(f"**{clave}:** {valor}  ")
+        partes += [f"**{clave}:** {valor}  " for clave, valor in metadatos.items()]
         partes.append("")
 
     if cabecera:
-        partes.extend([cabecera, ""])
+        partes += [cabecera, ""]
 
-    partes.extend(["---", "", "## Cronología", ""])
+    partes += ["---", "", "## Cronología", ""]
 
     if bloques and len(bloques) == len(tramos):
         for bloque, tramo in zip(bloques, tramos):
             franja = f"{_reloj(bloque.inicio)} – {_reloj(bloque.fin)}"
-            partes.append(f"*Grabación {franja}*")
-            partes.append("")
-            partes.append(tramo)
-            partes.append("")
+            partes += [f"*Grabación {franja}*", "", tramo, ""]
     else:
         partes.append("\n\n".join(tramos))
 
@@ -413,13 +300,12 @@ def resumir(
     bloques: list[Bloque],
     titulo: str,
     metadatos: dict[str, str] | None = None,
-    modelo: str = "qwen3:8b",
+    modelo: str = MODELO_POR_DEFECTO,
     url: str = URL_OLLAMA,
     contexto: int = CONTEXTO_OLLAMA,
     modo: str = MODO_POR_DEFECTO,
     avisar: Callable[[str], None] | None = None,
 ) -> ResultadoResumen:
-    """Ejecuta las dos fases y devuelve el documento final."""
     if not bloques:
         raise ErrorOllama("No hay nada que resumir: la transcripción está vacía.")
 
@@ -431,12 +317,12 @@ def resumir(
         modo=modo,
         avisar=avisar,
     )
-
-    # Con un solo tramo la cabecera aporta poco, pero mantiene el formato
-    # uniforme entre sesiones cortas y largas.
     cabecera = generar_cabecera(
         tramos, modelo=modelo, url=url, contexto=contexto, modo=modo, avisar=avisar
     )
 
-    documento = componer_documento(titulo, cabecera, tramos, metadatos, bloques)
-    return ResultadoResumen(documento=documento, tramos=tramos)
+    return ResultadoResumen(
+        documento=componer_documento(titulo, cabecera, tramos, metadatos, bloques),
+        tramos=tramos,
+    )
+

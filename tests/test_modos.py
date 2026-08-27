@@ -4,6 +4,8 @@ Cada modo tiene su propia carpeta de prompts en `prompts/<modo>/`, y se elige
 con `modo` en la sección [general] de config.ini.
 """
 
+import pytest
+
 from app import config as cfg
 from app.pipeline import resumidor
 from app.pipeline.resumidor import cargar_prompt
@@ -68,8 +70,8 @@ def test_carga_el_prompt_del_modo_indicado(tmp_path, monkeypatch):
         "PROMPT CHARLA", encoding="utf-8"
     )
 
-    assert cargar_prompt("cronologia", "x", "rol") == "PROMPT ROL"
-    assert cargar_prompt("cronologia", "x", "conversacion") == "PROMPT CHARLA"
+    assert cargar_prompt("cronologia", "rol") == "PROMPT ROL"
+    assert cargar_prompt("cronologia", "conversacion") == "PROMPT CHARLA"
 
 
 def test_si_falta_el_prompt_del_modo_usa_el_de_rol(tmp_path, monkeypatch):
@@ -78,13 +80,14 @@ def test_si_falta_el_prompt_del_modo_usa_el_de_rol(tmp_path, monkeypatch):
     (tmp_path / "rol").mkdir()
     (tmp_path / "rol" / "cabecera.txt").write_text("CABECERA ROL", encoding="utf-8")
 
-    assert cargar_prompt("cabecera", "x", "conversacion") == "CABECERA ROL"
+    assert cargar_prompt("cabecera", "conversacion") == "CABECERA ROL"
 
 
-def test_sin_ningun_archivo_usa_el_prompt_interno(tmp_path, monkeypatch):
+def test_sin_ningun_archivo_falla_diciendo_cual(tmp_path, monkeypatch):
     monkeypatch.setattr(resumidor, "DIR_PROMPTS", tmp_path)
 
-    assert cargar_prompt("cronologia", "INTERNO", "conversacion") == "INTERNO"
+    with pytest.raises(FileNotFoundError, match="cronologia"):
+        cargar_prompt("cronologia", "conversacion")
 
 
 def test_el_modo_llega_al_prompt_del_bloque(tmp_path, monkeypatch):

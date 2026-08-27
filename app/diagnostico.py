@@ -8,7 +8,6 @@ funcione, y dice exactamente qué falla si algo no está.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 
 from . import config as cfg
@@ -20,23 +19,8 @@ MAL = "[--]"
 
 
 def _linea(bien: bool, etiqueta: str, detalle: str = "") -> bool:
-    marca = OK if bien else MAL
-    print(f"{marca} {etiqueta}" + (f": {detalle}" if detalle else ""))
+    print(f"{OK if bien else MAL} {etiqueta}" + (f": {detalle}" if detalle else ""))
     return bien
-
-
-def _servicios_docker() -> list[str]:
-    try:
-        proceso = subprocess.run(
-            ["docker", "compose", "ps", "--format", "{{.Service}}\t{{.State}}"],
-            cwd=str(cfg.DIR_CRAIG),
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        return [l for l in proceso.stdout.splitlines() if l.strip()]
-    except (subprocess.SubprocessError, OSError):
-        return []
 
 
 def _tabla_recording_existe() -> tuple[bool, str]:
@@ -74,7 +58,7 @@ def main() -> int:
     _linea(diag["craig_instalado"], "craig descargado")
     _linea(diag["craig_configurado"], "install.config generado")
 
-    servicios = _servicios_docker()
+    servicios = docker_manager.servicios_con_estado()
     _linea(bool(servicios), "contenedores", f"{len(servicios)} en marcha")
     for servicio in servicios:
         print(f"     {servicio}")

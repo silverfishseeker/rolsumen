@@ -214,7 +214,7 @@ rolsumen/
 | `precision` | `float16` | `int8_float16` (ahorra memoria), `int8` (el más ligero) |
 | `dispositivo` | `auto` | `cuda`, `cpu` |
 | `resumen` | `qwen3:8b` | cualquier modelo que aparezca en `ollama list` |
-| `contexto_resumen` | `16384` | subir si sobra memoria de vídeo, bajar si falta |
+| `contexto_resumen` | `8192` | subir si sobra memoria de vídeo, bajar si falta. Medido con qwen3:8b en 8 GB: 8192 cabe entero en la GPU, 12288 ya no y la generación se desploma |
 
 En CPU la precisión `float16` no existe, así que se degrada sola a `int8` en lugar de fallar al cargar el modelo.
 

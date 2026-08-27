@@ -42,7 +42,7 @@ def test_se_ejecuta_entero_sin_docker(monkeypatch, capsys):
             "craig_levantado": False,
         },
     )
-    monkeypatch.setattr(diagnostico, "_servicios_docker", lambda: [])
+    monkeypatch.setattr(diagnostico.docker_manager, "servicios_con_estado", lambda *a, **k: [])
     monkeypatch.setattr(
         diagnostico.resumidor, "ollama_disponible", lambda *a, **k: False
     )
@@ -70,7 +70,7 @@ def test_avisa_si_falta_el_modelo_de_ollama(monkeypatch, capsys):
             False,
         ),
     )
-    monkeypatch.setattr(diagnostico, "_servicios_docker", lambda: [])
+    monkeypatch.setattr(diagnostico.docker_manager, "servicios_con_estado", lambda *a, **k: [])
     monkeypatch.setattr(
         diagnostico.resumidor, "ollama_disponible", lambda *a, **k: True
     )
@@ -83,3 +83,4 @@ def test_avisa_si_falta_el_modelo_de_ollama(monkeypatch, capsys):
     salida = capsys.readouterr().out
     # El modelo configurado no está en la lista: debe salir marcado como fallo.
     assert diagnostico.MAL in salida
+

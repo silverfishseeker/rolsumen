@@ -51,7 +51,6 @@ def test_fecha_ilegible_es_none():
 def test_etiqueta_de_fecha_para_nombrar_archivos():
     grabacion = Grabacion(
         id="abc",
-        guild_id="123",
         creada=datetime(2026, 8, 18, 22, 30),
         terminada=None,
     )
@@ -61,14 +60,14 @@ def test_etiqueta_de_fecha_para_nombrar_archivos():
 
 def test_etiqueta_de_fecha_usa_el_final_si_no_hay_inicio():
     grabacion = Grabacion(
-        id="abc", guild_id="123", creada=None, terminada=datetime(2026, 1, 5)
+        id="abc", creada=None, terminada=datetime(2026, 1, 5)
     )
 
     assert grabacion.etiqueta_fecha == "2026-01-05"
 
 
 def test_etiqueta_de_fecha_sin_fechas():
-    grabacion = Grabacion(id="abc", guild_id="123", creada=None, terminada=None)
+    grabacion = Grabacion(id="abc", creada=None, terminada=None)
 
     assert grabacion.etiqueta_fecha == "sin-fecha"
 

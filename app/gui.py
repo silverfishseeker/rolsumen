@@ -1,12 +1,11 @@
 """Ventana de la aplicación: puramente informativa.
 
 Muestra el estado de los servicios y por dónde va el proceso. Los únicos
-controles son un botón para forzar una búsqueda y otro para abrir la carpeta
-de crónicas; todo lo demás ocurre solo.
+controles son un botón para forzar la búsqueda y otro para abrir la carpeta de
+crónicas; el resto ocurre solo.
 
-Todo el trabajo pesado (Docker, Whisper, Ollama) corre en un hilo aparte y se
-comunica con la ventana mediante una cola, para que la interfaz nunca se
-congele.
+El trabajo pesado corre en un hilo aparte y se comunica con la ventana por una
+cola, para que la interfaz nunca se congele.
 """
 
 from __future__ import annotations
@@ -18,21 +17,33 @@ import threading
 import tkinter as tk
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from tkinter import scrolledtext, ttk
 
 from . import config as cfg
 from . import dependencias, docker_manager
 from .pipeline import orquestador, resumidor
 
-INTERVALO_BUSQUEDA_MS = 60_000  # cada minuto se buscan grabaciones nuevas
+INTERVALO_BUSQUEDA_MS = 60_000
 INTERVALO_COLA_MS = 100
 INTERVALO_ESTADO_MS = 10_000
 
-COLOR_OK = "#2e7d32"
-COLOR_MAL = "#c62828"
-COLOR_ESPERA = "#ef6c00"
-COLOR_NEUTRO = "#666666"
+OK = "#2e7d32"
+MAL = "#c62828"
+ESPERA = "#ef6c00"
+NEUTRO = "#666666"
+
+SERVICIOS = (
+    ("docker", "Docker"),
+    ("craig", "Craig (grabación)"),
+    ("ollama", "Ollama (resúmenes)"),
+    ("ffmpeg", "ffmpeg (audio)"),
+    ("gpu", "GPU (transcripción)"),
+)
+
+DESCRIPCION_MODO = {
+    "rol": "Crónicas de partidas de rol",
+    "conversacion": "Resúmenes de conversaciones",
+}
 
 
 @dataclass
@@ -44,9 +55,38 @@ class Aviso:
     datos: dict | None = None
 
 
-class Ventana:
-    """Ventana principal de Rolsumen."""
+def _estado_servicios(datos: dict) -> dict[str, tuple[str, str]]:
+    """Traduce el diagnóstico a (texto, color) por servicio."""
+    if not datos.get("docker_instalado"):
+        docker = ("no instalado", MAL)
+    elif datos.get("docker"):
+        docker = ("en marcha", OK)
+    else:
+        docker = ("parado (abre Docker Desktop)", MAL)
 
+    if not datos.get("craig_instalado"):
+        craig = ("sin instalar", MAL)
+    elif not datos.get("craig_configurado"):
+        craig = ("falta configurar", ESPERA)
+    elif datos.get("craig"):
+        craig = ("grabando disponible", OK)
+    else:
+        craig = ("parado", ESPERA)
+
+    return {
+        "docker": docker,
+        "craig": craig,
+        "ollama": ("disponible", OK) if datos.get("ollama") else ("no responde", MAL),
+        "ffmpeg": ("disponible", OK) if datos.get("ffmpeg") else ("no encontrado", MAL),
+        "gpu": (
+            (datos.get("gpu_nombre") or "activa", OK)
+            if datos.get("gpu")
+            else ("sin GPU (irá lento)", ESPERA)
+        ),
+    }
+
+
+class Ventana:
     def __init__(self, raiz: tk.Tk) -> None:
         self.raiz = raiz
         self.cola: queue.Queue[Aviso] = queue.Queue()
@@ -54,13 +94,15 @@ class Ventana:
         self.ocupado = False
         self._parar = threading.Event()
 
-        self.raiz.title("Rolsumen")
-        self.raiz.geometry("640x520")
-        self.raiz.minsize(520, 400)
-        self.raiz.protocol("WM_DELETE_WINDOW", self._al_cerrar)
+        raiz.title("Rolsumen")
+        raiz.geometry("640x520")
+        raiz.minsize(520, 400)
+        raiz.protocol("WM_DELETE_WINDOW", self._al_cerrar)
 
         self._construir()
-        self._programar_bucles()
+        self.raiz.after(INTERVALO_COLA_MS, self._vaciar_cola)
+        self.raiz.after(INTERVALO_ESTADO_MS, self._refrescar_estado)
+        self.raiz.after(INTERVALO_BUSQUEDA_MS, self._busqueda_periodica)
         self._arrancar()
 
     # ------------------------------------------------------------------ UI --
@@ -69,33 +111,29 @@ class Ventana:
         marco = ttk.Frame(self.raiz, padding=12)
         marco.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(
-            marco, text="Rolsumen", font=("Segoe UI", 15, "bold")
-        ).pack(anchor=tk.W)
-        self.subtitulo = ttk.Label(marco, text="", foreground=COLOR_NEUTRO)
+        ttk.Label(marco, text="Rolsumen", font=("Segoe UI", 15, "bold")).pack(
+            anchor=tk.W
+        )
+        descripcion = DESCRIPCION_MODO.get(self.configuracion.modo, "Resúmenes")
+        self.subtitulo = ttk.Label(
+            marco,
+            text=f"{descripcion}  ·  modo: {self.configuracion.modo}",
+            foreground=NEUTRO,
+        )
         self.subtitulo.pack(anchor=tk.W, pady=(0, 10))
-        self._pintar_subtitulo()
 
-        # --- Estado de los servicios ---
         caja = ttk.LabelFrame(marco, text="Servicios", padding=10)
         caja.pack(fill=tk.X)
 
         self.indicadores: dict[str, ttk.Label] = {}
-        for clave, etiqueta in (
-            ("docker", "Docker"),
-            ("craig", "Craig (grabación)"),
-            ("ollama", "Ollama (resúmenes)"),
-            ("ffmpeg", "ffmpeg (audio)"),
-            ("gpu", "GPU (transcripción)"),
-        ):
+        for clave, etiqueta in SERVICIOS:
             fila = ttk.Frame(caja)
             fila.pack(fill=tk.X, pady=1)
             ttk.Label(fila, text=etiqueta, width=22).pack(side=tk.LEFT)
-            valor = ttk.Label(fila, text="comprobando...", foreground=COLOR_NEUTRO)
+            valor = ttk.Label(fila, text="comprobando...", foreground=NEUTRO)
             valor.pack(side=tk.LEFT)
             self.indicadores[clave] = valor
 
-        # --- Actividad ---
         caja_log = ttk.LabelFrame(marco, text="Actividad", padding=6)
         caja_log.pack(fill=tk.BOTH, expand=True, pady=(10, 8))
 
@@ -107,51 +145,30 @@ class Ventana:
             font=("Consolas", 9),
             background="#1e1e1e",
             foreground="#d4d4d4",
-            insertbackground="#d4d4d4",
             relief=tk.FLAT,
         )
         self.log.pack(fill=tk.BOTH, expand=True)
 
-        # --- Barra inferior ---
         barra = ttk.Frame(marco)
         barra.pack(fill=tk.X)
-
         self.boton_buscar = ttk.Button(
             barra, text="Buscar grabaciones", command=self._buscar_ahora
         )
         self.boton_buscar.pack(side=tk.LEFT)
-
-        ttk.Button(
-            barra, text="Abrir crónicas", command=self._abrir_carpeta
-        ).pack(side=tk.LEFT, padx=6)
-
-        self.estado = ttk.Label(barra, text="Iniciando...", foreground=COLOR_NEUTRO)
+        ttk.Button(barra, text="Abrir crónicas", command=self._abrir_carpeta).pack(
+            side=tk.LEFT, padx=6
+        )
+        self.estado = ttk.Label(barra, text="Iniciando...", foreground=NEUTRO)
         self.estado.pack(side=tk.RIGHT)
 
         self.progreso = ttk.Progressbar(marco, mode="indeterminate")
 
-    def _pintar_subtitulo(self) -> None:
-        """Deja claro de un vistazo qué tipo de resumen se va a generar."""
-        descripciones = {
-            "rol": "Crónicas de partidas de rol",
-            "conversacion": "Resúmenes de conversaciones",
-        }
-        descripcion = descripciones.get(self.configuracion.modo, "Resúmenes")
-        self.subtitulo.config(text=f"{descripcion}  ·  modo: {self.configuracion.modo}")
-
     # -------------------------------------------------------------- bucles --
 
-    def _programar_bucles(self) -> None:
-        self.raiz.after(INTERVALO_COLA_MS, self._vaciar_cola)
-        self.raiz.after(INTERVALO_ESTADO_MS, self._refrescar_estado)
-        self.raiz.after(INTERVALO_BUSQUEDA_MS, self._busqueda_periodica)
-
     def _vaciar_cola(self) -> None:
-        """Aplica en la ventana los mensajes que manda el hilo de trabajo."""
         try:
             while True:
-                aviso = self.cola.get_nowait()
-                self._aplicar(aviso)
+                self._aplicar(self.cola.get_nowait())
         except queue.Empty:
             pass
         finally:
@@ -163,7 +180,8 @@ class Ventana:
         elif aviso.tipo == "estado":
             self.estado.config(text=aviso.texto)
         elif aviso.tipo == "servicios" and aviso.datos:
-            self._pintar_servicios(aviso.datos)
+            for clave, (texto, color) in _estado_servicios(aviso.datos).items():
+                self.indicadores[clave].config(text=texto, foreground=color)
         elif aviso.tipo == "ocupado":
             self._marcar_ocupado(bool(aviso.datos and aviso.datos.get("valor")))
 
@@ -198,43 +216,31 @@ class Ventana:
 
         if not docker_manager.docker_instalado():
             self._avisar("Docker no está instalado. Craig no puede arrancar.")
-            self._comprobar_servicios()
-            return
-
-        if not docker_manager.docker_en_marcha():
+        elif not docker_manager.docker_en_marcha():
             self._avisar(
                 "Docker no responde. Abre Docker Desktop y pulsa 'Buscar grabaciones'."
             )
-            self._comprobar_servicios()
-            return
-
-        if docker_manager.esta_levantado():
+        elif docker_manager.esta_levantado():
             self._avisar("Craig ya estaba en marcha.")
-        else:
-            faltan = self.configuracion.discord.faltantes()
-            if faltan:
-                self._avisar(
-                    "Faltan credenciales de Discord en app/config.ini "
-                    f"[discord]: {', '.join(faltan)}"
-                )
-                self._comprobar_servicios()
-                return
-
-            self._avisar("Levantando Craig (docker compose up)...")
-            resultado = docker_manager.levantar(
-                credenciales=self.configuracion.discord
+        elif faltan := self.configuracion.discord.faltantes():
+            self._avisar(
+                f"Faltan credenciales de Discord en {cfg.RUTA_CONFIG.name} "
+                f"[discord]: {', '.join(faltan)}"
             )
-            if resultado.ok:
-                self._avisar("Craig levantado.")
-            else:
-                self._avisar(f"No se pudo levantar Craig: {resultado.mensaje}")
+        else:
+            self._avisar("Levantando Craig (docker compose up)...")
+            resultado = docker_manager.levantar(credenciales=self.configuracion.discord)
+            self._avisar(
+                "Craig levantado."
+                if resultado.ok
+                else f"No se pudo levantar Craig: {resultado.mensaje}"
+            )
 
         self._comprobar_servicios()
         self._procesar_pendientes(silencioso=True)
 
     def _comprobar_servicios(self) -> None:
         diag = docker_manager.diagnostico()
-        ffmpeg = dependencias.comprobar_ffmpeg()
         gpu = dependencias.comprobar_gpu()
         self._enviar(
             Aviso(
@@ -246,7 +252,7 @@ class Ventana:
                     "craig_instalado": diag["craig_instalado"],
                     "craig_configurado": diag["craig_configurado"],
                     "ollama": resumidor.ollama_disponible(),
-                    "ffmpeg": ffmpeg.disponible,
+                    "ffmpeg": dependencias.comprobar_ffmpeg().disponible,
                     "gpu": gpu.disponible,
                     "gpu_nombre": gpu.ruta,
                 },
@@ -254,16 +260,14 @@ class Ventana:
         )
 
     def _buscar_ahora(self, silencioso: bool = False) -> None:
-        if self.ocupado:
-            return
-        self._en_hilo(lambda: self._procesar_pendientes(silencioso))
+        if not self.ocupado:
+            self._en_hilo(lambda: self._procesar_pendientes(silencioso))
 
     def _procesar_pendientes(self, silencioso: bool = False) -> None:
         if not docker_manager.esta_levantado():
             if not silencioso:
                 self._avisar("Craig no está en marcha; no se puede buscar nada.")
             return
-
         if not resumidor.ollama_disponible():
             if not silencioso:
                 self._avisar("Ollama no responde. Arráncalo para generar crónicas.")
@@ -272,12 +276,10 @@ class Ventana:
         self._ocupado(True)
         try:
             resultados = orquestador.procesar_pendientes(
-                self.configuracion,
-                avisar=self._avisar,
-                detener=self._parar.is_set,
+                self.configuracion, avisar=self._avisar, detener=self._parar.is_set
             )
-            correctos = sum(1 for r in resultados if r.ok)
             if resultados:
+                correctos = sum(1 for r in resultados if r.ok)
                 self._enviar(
                     Aviso(
                         tipo="estado",
@@ -290,15 +292,10 @@ class Ventana:
             self._ocupado(False)
 
     def _abrir_carpeta(self) -> None:
-        carpeta = cfg.DIR_RESUMENES
-        carpeta.mkdir(parents=True, exist_ok=True)
+        cfg.DIR_RESUMENES.mkdir(parents=True, exist_ok=True)
+        abridor = {"win32": "explorer", "darwin": "open"}.get(sys.platform, "xdg-open")
         try:
-            if sys.platform == "win32":
-                subprocess.Popen(["explorer", str(carpeta)])
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(carpeta)])
-            else:
-                subprocess.Popen(["xdg-open", str(carpeta)])
+            subprocess.Popen([abridor, str(cfg.DIR_RESUMENES)])
         except OSError as exc:
             self._escribir(f"No se pudo abrir la carpeta: {exc}")
 
@@ -346,47 +343,8 @@ class Ventana:
         self.log.see(tk.END)
         self.log.config(state=tk.DISABLED)
 
-    def _pintar_servicios(self, datos: dict) -> None:
-        if not datos.get("docker_instalado"):
-            self._indicador("docker", "no instalado", COLOR_MAL)
-        elif datos.get("docker"):
-            self._indicador("docker", "en marcha", COLOR_OK)
-        else:
-            self._indicador("docker", "parado (abre Docker Desktop)", COLOR_MAL)
-
-        if not datos.get("craig_instalado"):
-            self._indicador("craig", "sin instalar", COLOR_MAL)
-        elif not datos.get("craig_configurado"):
-            self._indicador("craig", "falta install.config", COLOR_ESPERA)
-        elif datos.get("craig"):
-            self._indicador("craig", "grabando disponible", COLOR_OK)
-        else:
-            self._indicador("craig", "parado", COLOR_ESPERA)
-
-        if datos.get("ollama"):
-            self._indicador("ollama", "disponible", COLOR_OK)
-        else:
-            self._indicador("ollama", "no responde", COLOR_MAL)
-
-        if datos.get("ffmpeg"):
-            self._indicador("ffmpeg", "disponible", COLOR_OK)
-        else:
-            self._indicador("ffmpeg", "no encontrado", COLOR_MAL)
-
-        if datos.get("gpu"):
-            nombre = datos.get("gpu_nombre") or "activa"
-            self._indicador("gpu", nombre, COLOR_OK)
-        else:
-            self._indicador("gpu", "sin GPU (irá lento)", COLOR_ESPERA)
-
-    def _indicador(self, clave: str, texto: str, color: str) -> None:
-        etiqueta = self.indicadores.get(clave)
-        if etiqueta is not None:
-            etiqueta.config(text=texto, foreground=color)
-
 
 def lanzar() -> None:
-    """Abre la ventana principal."""
     raiz = tk.Tk()
     try:
         ttk.Style().theme_use("vista")

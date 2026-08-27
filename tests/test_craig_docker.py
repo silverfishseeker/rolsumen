@@ -1,6 +1,6 @@
 """Tests de las correcciones necesarias para levantar Craig en Docker.
 
-Ambas salieron de intentar arrancarlo de verdad:
+Las tres salieron de intentar arrancarlo de verdad:
 
 1. El `docker-compose.yml` de Craig pide `image: postgres` sin versión. Hoy eso
    resuelve a PostgreSQL 18, que cambió dónde espera los datos, y el contenedor
@@ -8,6 +8,9 @@ Ambas salieron de intentar arrancarlo de verdad:
 2. Los archivos de configuración los consume un contenedor Linux. Si Python los
    escribe con los saltos de línea de Windows, el shell falla con
    `line 4: $'\\r': command not found`.
+3. Craig declara `restart: always` en db y redis, así que los contenedores
+   resucitan al arrancar Docker Desktop. Rolsumen los levanta y los baja con
+   la ventana, y no deben arrancar nunca por su cuenta.
 """
 
 from app.config import Credenciales
@@ -51,6 +54,36 @@ def test_el_override_explica_por_que_existe():
     # Sin la explicación, el siguiente que lo lea lo borrará por parecer inútil.
     assert "18" in COMPOSE_OVERRIDE
     assert "/var/lib/postgresql/data" in COMPOSE_OVERRIDE
+
+
+# --- Política de reinicio ----------------------------------------------------
+
+
+def test_el_override_desactiva_el_reinicio_automatico(tmp_path):
+    # Craig trae `restart: always` en db y redis. Sin anularlo, los contenedores
+    # vuelven solos al arrancar Docker Desktop, con Rolsumen cerrado.
+    contenido = crear_override(tmp_path).read_text(encoding="utf-8")
+
+    for servicio in ("db", "redis", "craig"):
+        assert f"  {servicio}:" in contenido
+    # Entre comillas a propósito: en YAML `no` sin comillas es el booleano False.
+    assert contenido.count('restart: "no"') == 3
+
+
+def test_el_override_no_encadena_el_bot_al_reinicio_de_la_base_de_datos(tmp_path):
+    contenido = crear_override(tmp_path).read_text(encoding="utf-8")
+
+    assert "restart: false" in contenido
+    assert "restart: true" not in contenido
+
+
+def test_ningun_servicio_se_reinicia_siempre():
+    # Solo las líneas efectivas: los comentarios citan `restart: always` para
+    # explicar que es justo lo que se está anulando.
+    efectivas = [
+        l for l in COMPOSE_OVERRIDE.splitlines() if not l.strip().startswith("#")
+    ]
+    assert not [l for l in efectivas if "restart: always" in l]
 
 
 def test_no_sobrescribe_un_override_existente(tmp_path):

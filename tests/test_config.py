@@ -127,9 +127,20 @@ def test_en_gpu_se_respeta_la_precision(tmp_path):
 
 
 def test_contexto_invalido_cae_al_valor_por_defecto(tmp_path):
+    # Contra la constante, no contra un número: si cambia el valor medido, el
+    # test no debe quedarse comprobando el antiguo.
     ruta = escribir(tmp_path, "[modelos]\ncontexto_resumen = no_es_un_numero\n")
 
-    assert cfg.cargar(ruta).modelos.contexto_resumen == 16384
+    assert cfg.cargar(ruta).modelos.contexto_resumen == cfg.CONTEXTO_POR_DEFECTO
+
+
+def test_sin_seccion_modelos_el_contexto_es_el_medido(tmp_path):
+    # El fallo que motivó este test: la clase tenía por defecto un valor mayor
+    # que el medido, así que sin sección [modelos] se pedía un contexto que no
+    # cabe en la GPU y Ollama descargaba capas a la CPU.
+    configuracion = cfg.cargar(tmp_path / "no_existe.ini")
+
+    assert configuracion.modelos.contexto_resumen == cfg.CONTEXTO_POR_DEFECTO
 
 
 def test_campo_vacio_no_pisa_el_valor_por_defecto(tmp_path):

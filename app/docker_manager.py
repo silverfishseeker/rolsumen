@@ -1,9 +1,8 @@
-"""Control del ciclo de vida de Craig (self-hosted) mediante Docker Compose.
+"""Ciclo de vida de Craig mediante Docker Compose.
 
-La aplicación levanta Craig al abrirse y lo baja al cerrarse, para no tenerlo
+La aplicación lo levanta al abrirse y lo baja al cerrarse, para no tenerlo
 corriendo permanentemente. `docker compose up` es idempotente, así que si la
-aplicación se cerró mal y los contenedores siguen en pie, volver a levantarlos
-no rompe nada.
+aplicación se cerró mal y los contenedores siguen en pie, no rompe nada.
 """
 
 from __future__ import annotations
@@ -19,8 +18,6 @@ TIMEOUT_COMANDO = 300
 
 @dataclass
 class ResultadoComando:
-    """Salida de un comando de Docker."""
-
     ok: bool
     salida: str
     error: str
@@ -28,10 +25,6 @@ class ResultadoComando:
     @property
     def mensaje(self) -> str:
         return (self.error or self.salida).strip()
-
-
-class ErrorDocker(RuntimeError):
-    """Fallo al operar con Docker."""
 
 
 def _ejecutar(argumentos: list[str], cwd: Path | None = None) -> ResultadoComando:
@@ -46,81 +39,70 @@ def _ejecutar(argumentos: list[str], cwd: Path | None = None) -> ResultadoComand
             encoding="utf-8",
             errors="replace",
         )
-        return ResultadoComando(
-            ok=proceso.returncode == 0,
-            salida=proceso.stdout or "",
-            error=proceso.stderr or "",
-        )
     except FileNotFoundError:
         return ResultadoComando(
-            ok=False,
-            salida="",
-            error="No se encontró el comando 'docker'. ¿Está Docker instalado?",
+            False, "", "No se encontró el comando 'docker'. ¿Está Docker instalado?"
         )
     except subprocess.TimeoutExpired:
-        return ResultadoComando(
-            ok=False, salida="", error="El comando de Docker tardó demasiado."
-        )
+        return ResultadoComando(False, "", "El comando de Docker tardó demasiado.")
     except OSError as exc:
-        return ResultadoComando(ok=False, salida="", error=str(exc))
+        return ResultadoComando(False, "", str(exc))
+
+    return ResultadoComando(
+        proceso.returncode == 0, proceso.stdout or "", proceso.stderr or ""
+    )
 
 
 def docker_instalado() -> bool:
-    """¿Está el ejecutable de Docker disponible?"""
     return _ejecutar(["docker", "--version"]).ok
 
 
 def docker_en_marcha() -> bool:
-    """¿Está el demonio de Docker aceptando comandos?
-
-    En Windows esto equivale a comprobar si Docker Desktop está abierto.
-    """
+    """En Windows equivale a comprobar si Docker Desktop está abierto."""
     return _ejecutar(["docker", "info"]).ok
 
 
 def hay_compose(dir_craig: Path = DIR_CRAIG) -> bool:
-    """¿Está el docker-compose.yml de Craig en su sitio?"""
     return (dir_craig / "docker-compose.yml").exists()
 
 
 def hay_configuracion(dir_craig: Path = DIR_CRAIG) -> bool:
-    """¿Existe el install.config con los tokens de Discord?"""
     return (dir_craig / "install.config").exists()
 
 
 def servicios_activos(dir_craig: Path = DIR_CRAIG) -> list[str]:
-    """Nombres de los servicios de Craig que están corriendo."""
     resultado = _ejecutar(
         ["docker", "compose", "ps", "--services", "--filter", "status=running"],
         cwd=dir_craig,
     )
-    if not resultado.ok:
-        return []
-    return [linea.strip() for linea in resultado.salida.splitlines() if linea.strip()]
+    return (
+        [l.strip() for l in resultado.salida.splitlines() if l.strip()]
+        if resultado.ok
+        else []
+    )
+
+
+def servicios_con_estado(dir_craig: Path = DIR_CRAIG) -> list[str]:
+    """Como `servicios_activos` pero incluyendo los caídos y su estado."""
+    resultado = _ejecutar(
+        ["docker", "compose", "ps", "--format", "{{.Service}}\t{{.State}}"],
+        cwd=dir_craig,
+    )
+    return [l.strip() for l in resultado.salida.splitlines() if l.strip()]
 
 
 def esta_levantado(dir_craig: Path = DIR_CRAIG) -> bool:
-    """¿Está Craig en marcha?"""
     return bool(servicios_activos(dir_craig))
 
 
-def levantar(
-    dir_craig: Path = DIR_CRAIG, credenciales=None
-) -> ResultadoComando:
-    """Levanta Craig en segundo plano (`docker compose up -d`).
-
-    Antes de arrancar vuelca las credenciales de Discord de nuestro config.ini
-    en la configuración interna de Craig, para que el usuario sólo tenga que
-    mantener un archivo.
-    """
+def levantar(dir_craig: Path = DIR_CRAIG, credenciales=None) -> ResultadoComando:
+    """Levanta Craig, volcando antes las credenciales de config.ini."""
     if not hay_compose(dir_craig):
         return ResultadoComando(
-            ok=False,
-            salida="",
-            error=(
-                f"No se encontró Craig en {dir_craig}. "
-                "Instálalo con: python -m app.instalar_craig"
-            ),
+            False,
+            "",
+            f"No se encontró Craig en {dir_craig}. "
+            "Instálalo con: python -m app.instalar_craig",
         )
 
     if credenciales is not None:
@@ -128,33 +110,27 @@ def levantar(
 
         ok, mensaje = sincronizar_credenciales(credenciales, dir_craig)
         if not ok:
-            return ResultadoComando(ok=False, salida="", error=mensaje)
+            return ResultadoComando(False, "", mensaje)
 
     if not hay_configuracion(dir_craig):
         return ResultadoComando(
-            ok=False,
-            salida="",
-            error=(
-                "Faltan las credenciales de Discord. Rellena la sección "
-                "[discord] de app/config.ini."
-            ),
+            False,
+            "",
+            "Faltan las credenciales de Discord. Rellena la sección "
+            "[discord] de config.ini.",
         )
 
     return _ejecutar(["docker", "compose", "up", "-d"], cwd=dir_craig)
 
 
 def bajar(dir_craig: Path = DIR_CRAIG) -> ResultadoComando:
-    """Para y elimina los contenedores (`docker compose down`).
-
-    No borra los volúmenes: la base de datos y las grabaciones sobreviven.
-    """
+    """Para los contenedores sin borrar volúmenes: los datos sobreviven."""
     if not hay_compose(dir_craig):
-        return ResultadoComando(ok=True, salida="Craig no está instalado.", error="")
+        return ResultadoComando(True, "Craig no está instalado.", "")
     return _ejecutar(["docker", "compose", "down"], cwd=dir_craig)
 
 
 def diagnostico(dir_craig: Path = DIR_CRAIG) -> dict[str, bool]:
-    """Estado de cada requisito, para pintarlo en la interfaz."""
     return {
         "docker_instalado": docker_instalado(),
         "docker_en_marcha": docker_en_marcha(),

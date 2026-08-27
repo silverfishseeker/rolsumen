@@ -7,7 +7,8 @@ razonable, de modo que la aplicación funcione sin que el usuario toque nada.
 from __future__ import annotations
 
 import configparser
-from dataclasses import dataclass, field
+import textwrap
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 # Raíz del proyecto (este archivo vive en <raíz>/app/config.py)
@@ -95,8 +96,9 @@ resumen = qwen3:8b
 
 # Tamaño de contexto que se le pide a Ollama. Por defecto Ollama usa 4096,
 # muy poco para esto. Súbelo si tienes VRAM de sobra; bájalo si se queda
-# sin memoria.
-contexto_resumen = 16384
+# sin memoria: si el contexto no cabe en la GPU, Ollama pasa capas a la CPU
+# y la generación se vuelve lentísima.
+contexto_resumen = {contexto}
 
 [jugadores]
 # Asocia cada usuario de Discord con el nombre de su personaje.
@@ -115,20 +117,19 @@ class Credenciales:
     secreto_cliente: str = ""
     id_aplicacion: str = ""
 
+    def faltantes(self) -> list[str]:
+        """Nombres de las credenciales que siguen sin rellenar."""
+        return [c.name for c in fields(self) if not getattr(self, c.name)]
+
     @property
     def completas(self) -> bool:
-        return bool(self.token_bot and self.secreto_cliente and self.id_aplicacion)
+        return not self.faltantes()
 
-    def faltantes(self) -> list[str]:
-        """Nombres legibles de lo que falta por rellenar."""
-        pendientes = []
-        if not self.id_aplicacion:
-            pendientes.append("id_aplicacion")
-        if not self.token_bot:
-            pendientes.append("token_bot")
-        if not self.secreto_cliente:
-            pendientes.append("secreto_cliente")
-        return pendientes
+
+# El techo no lo marca el modelo sino la memoria de vídeo: si el modelo y su
+# caché de atención no caben, Ollama descarga capas a la CPU y la generación se
+# desploma. Medido con qwen3:8b en 8 GB: 8192 va al 100% en GPU, 12288 ya no.
+CONTEXTO_POR_DEFECTO = 8192
 
 
 @dataclass
@@ -139,7 +140,7 @@ class Modelos:
     precision: str = "float16"
     dispositivo: str = "auto"
     resumen: str = "qwen3:8b"
-    contexto_resumen: int = 16384
+    contexto_resumen: int = CONTEXTO_POR_DEFECTO
 
     def dispositivo_efectivo(self) -> str:
         """Resuelve 'auto' mirando si hay GPU disponible."""
@@ -184,8 +185,6 @@ def _comentario_modos(ancho: int = 76) -> str:
     Se construye a partir de DESCRIPCION_MODOS para que la lista del archivo
     no pueda quedarse desfasada respecto a los modos que existen de verdad.
     """
-    import textwrap
-
     # '#' + 3 espacios + nombre (13) + 1 espacio = la descripción empieza aquí.
     columna = 18
     sangria = " " * (columna - 1)  # el '#' ocupa la primera posición
@@ -224,7 +223,9 @@ class Config:
 def plantilla_config() -> str:
     """El contenido del config.ini por defecto, con los modos ya listados."""
     return CONFIG_EJEMPLO.format(
-        modos=_comentario_modos(), modo_por_defecto=MODO_POR_DEFECTO
+        modos=_comentario_modos(),
+        modo_por_defecto=MODO_POR_DEFECTO,
+        contexto=CONTEXTO_POR_DEFECTO,
     )
 
 
@@ -240,10 +241,21 @@ def crear_config_si_falta(ruta: Path = RUTA_CONFIG) -> bool:
     return True
 
 
-def cargar(ruta: Path = RUTA_CONFIG) -> Config:
-    """Carga la configuración. Si el archivo no existe, usa los valores por defecto."""
-    cfg = Config()
+def _texto(seccion, clave: str, defecto: str) -> str:
+    """Valor de una clave; en blanco cuenta como ausente."""
+    return seccion.get(clave, "").strip() or defecto
 
+
+def _entero(seccion, clave: str, defecto: int) -> int:
+    try:
+        return int(seccion.get(clave, "").strip()) or defecto
+    except ValueError:
+        return defecto
+
+
+def cargar(ruta: Path = RUTA_CONFIG) -> Config:
+    """Carga la configuración; sin archivo, usa los valores por defecto."""
+    cfg = Config()
     if not ruta.exists():
         return cfg
 
@@ -254,44 +266,36 @@ def cargar(ruta: Path = RUTA_CONFIG) -> Config:
     if parser.has_section("general"):
         general = parser["general"]
 
-        carpeta = general.get("carpeta_resumenes", "").strip()
+        carpeta = _texto(general, "carpeta_resumenes", "")
         if carpeta:
             cfg.carpeta_resumenes_extra = Path(carpeta).expanduser()
 
-        cfg.idioma = general.get("idioma", cfg.idioma).strip()
+        cfg.idioma = _texto(general, "idioma", cfg.idioma)
 
-        modo = general.get("modo", "").strip().lower()
-        # Un modo desconocido vuelve al de por defecto en vez de romper: es
-        # preferible generar un resumen a no generar ninguno.
+        # Un modo desconocido cae al de por defecto: mejor generar un resumen
+        # con el modo equivocado que no generar ninguno.
+        modo = _texto(general, "modo", "").lower()
         cfg.modo = modo if modo in MODOS else MODO_POR_DEFECTO
 
     if parser.has_section("modelos"):
-        modelos = parser["modelos"]
-        try:
-            contexto = int(modelos.get("contexto_resumen", "").strip() or 0)
-        except ValueError:
-            contexto = 0
-
+        m = parser["modelos"]
+        por_defecto = cfg.modelos
         cfg.modelos = Modelos(
-            transcripcion=modelos.get(
-                "transcripcion", cfg.modelos.transcripcion
-            ).strip()
-            or cfg.modelos.transcripcion,
-            precision=modelos.get("precision", cfg.modelos.precision).strip()
-            or cfg.modelos.precision,
-            dispositivo=modelos.get("dispositivo", cfg.modelos.dispositivo).strip()
-            or cfg.modelos.dispositivo,
-            resumen=modelos.get("resumen", cfg.modelos.resumen).strip()
-            or cfg.modelos.resumen,
-            contexto_resumen=contexto or cfg.modelos.contexto_resumen,
+            transcripcion=_texto(m, "transcripcion", por_defecto.transcripcion),
+            precision=_texto(m, "precision", por_defecto.precision),
+            dispositivo=_texto(m, "dispositivo", por_defecto.dispositivo),
+            resumen=_texto(m, "resumen", por_defecto.resumen),
+            contexto_resumen=_entero(
+                m, "contexto_resumen", por_defecto.contexto_resumen
+            ),
         )
 
     if parser.has_section("discord"):
-        discord = parser["discord"]
+        d = parser["discord"]
         cfg.discord = Credenciales(
-            token_bot=discord.get("token_bot", "").strip(),
-            secreto_cliente=discord.get("secreto_cliente", "").strip(),
-            id_aplicacion=discord.get("id_aplicacion", "").strip(),
+            token_bot=_texto(d, "token_bot", ""),
+            secreto_cliente=_texto(d, "secreto_cliente", ""),
+            id_aplicacion=_texto(d, "id_aplicacion", ""),
         )
 
     if parser.has_section("jugadores"):
