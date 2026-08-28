@@ -14,3 +14,7 @@ app/craig/
 
 # Configuración local del usuario (contiene los secretos de Discord)
 config.ini
+
+# Acceso directo: lleva rutas absolutas de esta máquina.
+# Se genera con: python -m app.acceso_directo
+Rolsumen.lnk

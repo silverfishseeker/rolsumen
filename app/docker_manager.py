@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import DIR_CRAIG
+from .procesos import SIN_CONSOLA
 
 TIMEOUT_COMANDO = 300
 
@@ -33,6 +34,7 @@ def _ejecutar(argumentos: list[str], cwd: Path | None = None) -> ResultadoComand
         proceso = subprocess.run(
             argumentos,
             cwd=str(cwd) if cwd else None,
+            **SIN_CONSOLA,
             capture_output=True,
             text=True,
             timeout=TIMEOUT_COMANDO,

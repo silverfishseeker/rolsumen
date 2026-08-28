@@ -37,9 +37,12 @@ python -m app.instalar_craig
 # 2. Rellenar las credenciales de Discord en config.ini, sección [discord]
 #    (el identificador de la aplicación ya viene puesto)
 
-# 3. Abrir la aplicación
-python -m app.main
+# 3. Crear el acceso directo (una vez) y abrir con doble clic
+python -m app.acceso_directo            # deja Rolsumen.lnk en esta carpeta
+python -m app.acceso_directo --escritorio   # y otro en el escritorio
 ```
+
+También se puede abrir sin él: `python -m app.main`.
 
 `config.ini`, en la raíz del proyecto, es el **único** archivo que hay que tocar. Las credenciales van ahí:
 
@@ -53,6 +56,14 @@ id_aplicacion = 1539028879342047263   ; "General Information" -> Application ID
 La aplicación las copia sola al `install.config` interno de Craig antes de arrancarlo, así que ese archivo es un detalle de implementación que no hay que mantener a mano. `config.ini` está en el `.gitignore`, de modo que los secretos no acaban en el repositorio.
 
 Al hacerlo, se aplican también los ajustes que Craig necesita para funcionar dentro de Docker: su `install.config.example` apunta la base de datos a `localhost:5432`, que **no funciona** dentro de un contenedor, y debe ser `db:5432` (el nombre del servicio en `docker-compose.yml`). Lo mismo con Redis.
+
+## El acceso directo
+
+`Rolsumen.lnk` apunta a `pythonw.exe`, el intérprete sin consola, así que abre la ventana sin dejar detrás un terminal negro. Lleva el icono de la aplicación y no se sube al repositorio, porque guarda rutas absolutas de la máquina donde se creó: se regenera con `python -m app.acceso_directo`.
+
+El icono (`app/recursos/rolsumen.ico`) es un d20, y se dibuja por separado para cada tamaño que pide Windows: a 16 px, que es el de la barra de tareas, un trazo del 2% se queda en un tercio de píxel y el dado se convierte en una mancha dorada, así que los tamaños pequeños llevan el trazo más grueso. Se regenera con `python -m app.recursos.generar_icono`.
+
+Para que la barra de tareas use ese icono y no el de Python no basta con ponérselo a la ventana: hay que declarar un identificador de aplicación propio con `SetCurrentProcessExplicitAppUserModelID`, y **antes de crear la primera ventana**. Hacerlo después no surte efecto.
 
 ## La ventana
 
@@ -211,6 +222,11 @@ rolsumen/
 │   ├── craig_client.py     # consulta grabaciones y ejecuta el "cook"
 │   ├── instalar_craig.py   # descarga y prepara Craig (una vez)
 │   ├── diagnostico.py      # revisa los requisitos y dice qué falla
+│   ├── acceso_directo.py   # crea Rolsumen.lnk con su icono
+│   │
+│   ├── recursos/           # icono de la aplicación
+│   │   ├── rolsumen.ico
+│   │   └── generar_icono.py
 │   │
 │   ├── prompts/            # instrucciones del modelo, editables
 │   │   ├── rol/            #   cronologia.txt + cabecera.txt

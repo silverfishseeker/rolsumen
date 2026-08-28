@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 from . import config as cfg
+from .procesos import SIN_CONSOLA
 from .config import DIR_CRAIG
 
 REPO_CRAIG = "https://github.com/CraigChat/craig.git"
@@ -121,7 +122,9 @@ def clonar(destino: Path = DIR_CRAIG) -> bool:
 
     try:
         subprocess.run(
-            ["git", "clone", "--depth", "1", REPO_CRAIG, str(destino)], check=True
+            ["git", "clone", "--depth", "1", REPO_CRAIG, str(destino)],
+            check=True,
+            **SIN_CONSOLA,
         )
     except FileNotFoundError:
         print("ERROR: no se encontró 'git'. Instálalo y vuelve a intentarlo.")
@@ -185,6 +188,7 @@ def imagen_desactualizada(destino: Path = DIR_CRAIG) -> bool | None:
             capture_output=True,
             text=True,
             timeout=TIMEOUT_RECONSTRUIR,
+            **SIN_CONSOLA,
         )
     except (subprocess.SubprocessError, OSError):
         return None
@@ -205,6 +209,7 @@ def reconstruir_imagen(destino: Path = DIR_CRAIG) -> bool:
             ["docker", "compose", "build", "craig"],
             cwd=str(destino),
             timeout=TIMEOUT_RECONSTRUIR,
+            **SIN_CONSOLA,
         )
         return proceso.returncode == 0
     except (subprocess.SubprocessError, OSError):

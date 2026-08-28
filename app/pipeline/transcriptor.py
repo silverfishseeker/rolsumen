@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from .. import dependencias
+from ..procesos import SIN_CONSOLA
 from .tipos import Segmento
 
 PATRON_PISTA = re.compile(r"^(\d+)[-_](.+)$")
@@ -71,6 +72,7 @@ def duracion_audio(ruta: Path) -> float | None:
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", str(ruta)],
             capture_output=True, text=True, timeout=30, check=True,
+            **SIN_CONSOLA,
         )
         return float(salida.stdout.strip())
     except (subprocess.SubprocessError, ValueError, OSError):

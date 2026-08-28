@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import DIR_CRAIG
+from .procesos import SIN_CONSOLA
 
 TIMEOUT_CONSULTA = 60
 TIMEOUT_COCINADO = 3600  # cocinar una sesión larga tarda
@@ -54,6 +55,7 @@ def _en_craig(
         ["docker", "compose", *argumentos],
         cwd=str(dir_craig),
         timeout=timeout,
+        **SIN_CONSOLA,
         **extra,
     )
 

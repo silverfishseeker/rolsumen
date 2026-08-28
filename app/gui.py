@@ -14,6 +14,7 @@ otra cola de mensajes, para que la interfaz nunca se congele.
 
 from __future__ import annotations
 
+import os
 import queue
 import subprocess
 import sys
@@ -28,6 +29,7 @@ from . import dependencias, docker_manager
 from .pipeline import cola as modulo_cola
 from .pipeline import orquestador, resumidor
 from .craig_client import ErrorCraig
+from .procesos import SIN_CONSOLA
 from .pipeline.cola import RESUMIR, TRANSCRIBIR, Cola, Tarea
 
 INTERVALO_BUSQUEDA_MS = 60_000
@@ -97,13 +99,79 @@ def _estado_servicios(datos: dict) -> dict[str, tuple[str, str]]:
     }
 
 
+# Windows agrupa las ventanas por este identificador. Sin él, la aplicación se
+# agrupa bajo el intérprete y la barra de tareas muestra el icono de Python en
+# lugar del suyo, por mucho que la ventana tenga el correcto.
+ID_APLICACION = "silverfishlord.Rolsumen"
+
+
+def _identificar_aplicacion() -> None:
+    """Separa la aplicación del intérprete de cara a la barra de tareas.
+
+    **Tiene que llamarse antes de crear la ventana.** Windows decide el icono
+    de la barra de tareas cuando aparece la primera ventana; hacerlo después no
+    surte efecto y se sigue viendo el icono de Python.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(ID_APLICACION)
+    except (AttributeError, OSError):
+        pass
+
+
+def _aplicar_icono(raiz: tk.Tk) -> None:
+    """Pone el icono en la ventana y en la barra de tareas.
+
+    `iconbitmap` basta para la barra de título, pero la barra de tareas usa el
+    icono grande de la ventana (`WM_SETICON`), que tkinter no rellena. Sin
+    ponerlo a mano, ahí se sigue viendo el icono de Python.
+    """
+    try:
+        raiz.iconbitmap(default=str(cfg.RUTA_ICONO))
+    except tk.TclError:
+        pass
+
+    if sys.platform != "win32" or not cfg.RUTA_ICONO.exists():
+        return
+
+    try:
+        import ctypes
+
+        raiz.update_idletasks()  # hasta que no existe de verdad no hay ventana
+        usuario = ctypes.windll.user32
+        # winfo_id() da la ventana interna; la de la barra de tareas es su padre.
+        ventana = usuario.GetParent(raiz.winfo_id()) or raiz.winfo_id()
+
+        IMAGE_ICON, LR_LOADFROMFILE, LR_DEFAULTSIZE = 1, 0x10, 0x40
+        WM_SETICON, ICON_SMALL, ICON_BIG = 0x0080, 0, 1
+
+        for cual, medida in ((ICON_SMALL, 16), (ICON_BIG, 32)):
+            icono = usuario.LoadImageW(
+                None,
+                str(cfg.RUTA_ICONO),
+                IMAGE_ICON,
+                medida,
+                medida,
+                LR_LOADFROMFILE | LR_DEFAULTSIZE,
+            )
+            if icono:
+                usuario.SendMessageW(ventana, WM_SETICON, cual, icono)
+    except (AttributeError, OSError, tk.TclError):
+        # Sin icono la aplicación funciona igual; no merece romper el arranque.
+        pass
+
+
 def _abrir_con_el_sistema(ruta) -> None:
     """Abre un archivo o carpeta con el programa que le toque en este sistema."""
     if sys.platform == "win32":
-        subprocess.Popen(["cmd", "/c", "start", "", str(ruta)], shell=False)
+        # `os.startfile` evita pasar por `cmd`, que asomaría una consola.
+        os.startfile(str(ruta))  # noqa: S606 - es la ruta de un archivo nuestro
     else:
         abridor = "open" if sys.platform == "darwin" else "xdg-open"
-        subprocess.Popen([abridor, str(ruta)])
+        subprocess.Popen([abridor, str(ruta)], **SIN_CONSOLA)
 
 
 class Ventana:
@@ -131,6 +199,7 @@ class Ventana:
         )
 
         raiz.title("Rolsumen")
+        _aplicar_icono(raiz)
         raiz.geometry("760x600")
         raiz.minsize(660, 500)
         raiz.protocol("WM_DELETE_WINDOW", self._al_cerrar)
@@ -323,7 +392,10 @@ class Ventana:
         self.jugadores = tk.Text(jugadores, height=5, font=("Consolas", 9))
         self.jugadores.pack(fill=tk.X)
         self.jugadores.insert(
-            "1.0", "\n".join(f"{u} = {p}" for u, p in c.jugadores.items())
+            "1.0",
+            "\n".join(
+                f"{u} = {p}" for u, p in self.configuracion.jugadores.items()
+            ),
         )
 
         pie = ttk.Frame(marco)
@@ -801,6 +873,8 @@ class Ventana:
 
 
 def lanzar() -> None:
+    # Antes que nada: si no, la barra de tareas se queda con el icono de Python.
+    _identificar_aplicacion()
     raiz = tk.Tk()
     try:
         ttk.Style().theme_use("vista")

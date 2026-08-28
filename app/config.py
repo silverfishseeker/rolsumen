@@ -21,6 +21,9 @@ RUTA_CONFIG = RAIZ / "config.ini"
 # Plantillas de los prompts, editables sin tocar el código.
 DIR_PROMPTS = RAIZ / "app" / "prompts"
 
+# Icono de la ventana y del acceso directo.
+RUTA_ICONO = RAIZ / "app" / "recursos" / "rolsumen.ico"
+
 # Carpetas internas: no configurables, siempre en el mismo sitio.
 DIR_DATOS = RAIZ / "datos"
 DIR_GRABACIONES = DIR_DATOS / "grabaciones"
