@@ -65,6 +65,208 @@ LISTAS = (
 )
 
 
+# Explicación de cada ajuste, la que sale al pasar el ratón por encima.
+AYUDA = {
+    ("general", "ejecucion"): (
+        "Qué hace la aplicación al abrirse.\n\n"
+        "• automatico — se queda esperando. Cuando termina una grabación en "
+        "Craig, la transcribe y la resume sola, y vuelve a esperar.\n"
+        "• manual — no hace nada por su cuenta; cada paso se lanza desde la "
+        "pestaña Trabajo.\n\n"
+        "En automático NO se tocan las grabaciones anteriores a abrir la "
+        "aplicación: para procesar una del historial, lánzala a mano."
+    ),
+    ("general", "modo"): (
+        "Qué clase de resumen se escribe. Cada modo usa sus propios prompts, "
+        "en app/prompts/<modo>/, que se pueden editar sin tocar el código.\n\n"
+        "• rol — crónica de partida. Recoge sólo la acción DENTRO de la "
+        "ficción e ignora la charla de la mesa: reglas, tiradas, bromas.\n"
+        "• conversacion — resume todo lo que se habló, sin descartar nada por "
+        "informal, pero condensándolo."
+    ),
+    ("general", "idioma"): (
+        "Idioma de las grabaciones, en código ISO de dos letras: es, en, fr, "
+        "de, it, pt...\n\n"
+        "Se le pasa a Whisper. Decírselo es mejor que dejar que lo adivine: "
+        "acierta más y va más rápido.\n\n"
+        "Ojo: aquí va el código, no el nombre. «es», no «Spanish»."
+    ),
+    ("general", "carpeta_resumenes"): (
+        "Carpeta ADICIONAL donde copiar las crónicas.\n\n"
+        "Las crónicas se guardan siempre en datos/resumenes/. Si pones una "
+        "ruta aquí, se guarda además una copia en ella: útil para dejarlas en "
+        "una carpeta sincronizada o compartida con la mesa.\n\n"
+        "Vacío = sólo la copia interna. Si la carpeta falla, el proceso no se "
+        "interrumpe: la crónica ya está a salvo en datos/."
+    ),
+    ("modelos", "transcripcion"): (
+        "Modelo de Whisper que transcribe el audio. Se descarga solo la "
+        "primera vez que se usa.\n\n"
+        "• large-v3 — el más preciso (recomendado)\n"
+        "• medium — más rápido, comete más fallos\n"
+        "• small / base — rápidos y ligeros, poco fiables\n\n"
+        "Medido aquí: con medium se perdieron 27 segundos de audio sin avisar "
+        "de nada. Con una GPU decente, large-v3 compensa."
+    ),
+    ("modelos", "precision"): (
+        "Precisión numérica de la transcripción. Afecta sobre todo a la "
+        "memoria de vídeo que hace falta.\n\n"
+        "• float16 — calidad máxima (recomendado con 8 GB de VRAM o más)\n"
+        "• int8_float16 — ahorra memoria, calidad casi igual\n"
+        "• int8 — el más ligero, para GPUs pequeñas o CPU\n\n"
+        "En CPU no existe float16: se degrada a int8 automáticamente."
+    ),
+    ("modelos", "dispositivo"): (
+        "Dónde se transcribe.\n\n"
+        "• auto — usa la GPU si la hay, y si no la CPU (recomendado)\n"
+        "• cuda — obliga a usar la GPU de NVIDIA\n"
+        "• cpu — obliga a usar el procesador\n\n"
+        "Por CPU funciona, pero es mucho más lento: para una sesión larga la "
+        "diferencia se cuenta en horas."
+    ),
+    ("modelos", "resumen"): (
+        "Modelo de Ollama que redacta la crónica.\n\n"
+        "La lista son los que tienes descargados. Si está vacía, Ollama no "
+        "responde: arráncalo y vuelve a abrir esta pestaña.\n\n"
+        "Para añadir otros: ollama pull <nombre>"
+    ),
+    ("modelos", "contexto_resumen"): (
+        "Cuánto texto puede tener en cuenta el modelo de una vez, en tokens. "
+        "Por defecto Ollama usa 4096, muy poco para esto.\n\n"
+        "El techo no lo marca el modelo sino la MEMORIA DE VÍDEO: si el modelo "
+        "y su caché no caben, Ollama descarga capas a la CPU y la generación "
+        "se desploma.\n\n"
+        "Medido con qwen3:8b en 8 GB: 8192 va al 100% en GPU; 12288 ya no."
+    ),
+    ("modelos", "temperatura"): (
+        "Cuánto se ciñe el modelo a lo que oyó, de 0 a 1.\n\n"
+        "Más baja, más literal y más fiel a los hechos. Más alta, redacta "
+        "con más soltura pero arriesga inventar lo que nadie dijo.\n\n"
+        "Por defecto 0,3. Para un acta que se consulta meses después, "
+        "subirla suele ser mala idea."
+    ),
+    ("modelos", "tokens_por_bloque"): (
+        "Cuánta transcripción entra en cada tramo de la crónica.\n\n"
+        "La sesión se parte en tramos y cada uno se resume por separado, "
+        "encadenando el anterior como contexto.\n\n"
+        "• Más pequeño — más tramos, más detalle, más lento\n"
+        "• Más grande — menos tramos, más condensada, más rápida\n\n"
+        "Por defecto 4000. Es la palanca real sobre el nivel de detalle."
+    ),
+    ("modelos", "url_ollama"): (
+        "Dónde escucha Ollama.\n\n"
+        "Por defecto http://localhost:11434, que es lo normal si corre en "
+        "este mismo equipo.\n\n"
+        "Cámbialo sólo si lo has movido de puerto o si corre en otra "
+        "máquina de la red. Si no coincide, no habrá resúmenes."
+    ),
+    ("discord", "id_aplicacion"): (
+        "Identificador de tu aplicación de Discord.\n\n"
+        "Portal de desarrolladores → tu aplicación → General Information → "
+        "Application ID.\n\n"
+        "Sirve a la vez de APP_ID y de CLIENT_ID para Craig."
+    ),
+    ("discord", "token_bot"): (
+        "Token del bot que graba.\n\n"
+        "Portal de desarrolladores → tu aplicación → pestaña Bot → botón "
+        "«Reset Token».\n\n"
+        "Es una contraseña: quien la tenga controla el bot. Se guarda en "
+        "config.ini, que está fuera del repositorio."
+    ),
+    ("discord", "secreto_cliente"): (
+        "Secreto de cliente de OAuth2.\n\n"
+        "Portal de desarrolladores → tu aplicación → pestaña OAuth2 → botón "
+        "«Reset Secret».\n\n"
+        "Craig lo necesita para su panel web. Es otra contraseña."
+    ),
+    ("jugadores",): (
+        "Con qué nombre aparece cada persona en la crónica.\n\n"
+        "Un «usuario = personaje» por línea, por ejemplo:\n"
+        "    silverfishlord = Kaelen, el bardo\n"
+        "    caliece = Marina, la exploradora\n\n"
+        "A la izquierda el nombre de usuario de Discord; a la derecha, cómo "
+        "quieres que se le llame. Quien no aparezca sale con su nick.\n\n"
+        "Útil sobre todo en modo rol, para que la crónica hable de personajes "
+        "y no de cuentas de Discord."
+    ),
+}
+
+class Consejo:
+    """Explicación emergente al dejar el ratón sobre algo.
+
+    tkinter no trae nada parecido. Se muestra tras una pausa —si apareciera al
+    instante estorbaría al mover el ratón por encima— y se va al salir, al
+    pulsar o al girar la rueda.
+    """
+
+    RETARDO_MS = 500
+    ANCHO_TEXTO = 380
+
+    def __init__(self, widget, texto: str) -> None:
+        self.widget = widget
+        self.texto = texto
+        self._ventana: tk.Toplevel | None = None
+        self._pendiente: str | None = None
+
+        widget.bind("<Enter>", self._programar, add="+")
+        widget.bind("<Leave>", self._ocultar, add="+")
+        widget.bind("<ButtonPress>", self._ocultar, add="+")
+        widget.bind("<MouseWheel>", self._ocultar, add="+")
+
+    def _programar(self, _evento=None) -> None:
+        self._cancelar()
+        self._pendiente = self.widget.after(self.RETARDO_MS, self._mostrar)
+
+    def _cancelar(self) -> None:
+        if self._pendiente is not None:
+            try:
+                self.widget.after_cancel(self._pendiente)
+            except tk.TclError:
+                pass
+            self._pendiente = None
+
+    def _mostrar(self) -> None:
+        self._pendiente = None
+        if self._ventana is not None:
+            return
+        try:
+            x = self.widget.winfo_rootx() + 20
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+            self._ventana = tk.Toplevel(self.widget)
+            self._ventana.wm_overrideredirect(True)  # sin marco ni barra
+            self._ventana.wm_geometry(f"+{x}+{y}")
+            tk.Label(
+                self._ventana,
+                text=self.texto,
+                justify=tk.LEFT,
+                background="#ffffe0",
+                relief=tk.SOLID,
+                borderwidth=1,
+                wraplength=self.ANCHO_TEXTO,
+                padx=8,
+                pady=6,
+                font=("Segoe UI", 9),
+            ).pack()
+        except tk.TclError:
+            self._ventana = None
+
+    def _ocultar(self, _evento=None) -> None:
+        self._cancelar()
+        if self._ventana is not None:
+            try:
+                self._ventana.destroy()
+            except tk.TclError:
+                pass
+            self._ventana = None
+
+
+def explicar(widget, clave) -> None:
+    """Cuelga de un widget la explicación de ese ajuste, si la hay."""
+    texto = AYUDA.get(clave)
+    if texto:
+        Consejo(widget, texto)
+
+
 @dataclass
 class Aviso:
     """Mensaje del hilo de trabajo hacia la ventana."""
@@ -277,6 +479,8 @@ class Ventana:
         # `docker compose ps` puede tardar más que el intervalo de refresco;
         # sin esto se acumularían hilos, uno cada diez segundos.
         self._comprobando = threading.Event()
+        # Modelos que Ollama dice tener; se piden en cuanto responde.
+        self._modelos_ollama: list[str] = []
 
         # Modo automático: solo actúa sobre grabaciones que aparezcan a partir
         # de ahora. Lo anterior se queda esperando en la pestaña Trabajo.
@@ -433,6 +637,7 @@ class Ventana:
         barra.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.campos: dict[tuple[str, str], tk.Variable] = {}
+        self.desplegables: dict[tuple[str, str], ttk.Combobox] = {}
         # Una sola fuente para el valor de cada casilla, compartida con el
         # repintado posterior a guardar.
         inicial = self._valores_actuales()
@@ -462,23 +667,38 @@ class Ventana:
             inicial[("modelos", "transcripcion")],
             ("large-v3", "medium", "small", "base"),
         )
+        # Los modelos disponibles se piden a Ollama en segundo plano; de
+        # momento, al menos el que está configurado.
         self._desplegable(
             modelos,
-            ("modelos", "precision"),
-            "Precisión",
-            inicial[("modelos", "precision")],
-            ("float16", "int8_float16", "int8"),
+            ("modelos", "resumen"),
+            "Modelo de resumen",
+            inicial[("modelos", "resumen")],
+            [inicial[("modelos", "resumen")]] if inicial[("modelos", "resumen")] else [],
         )
-        self._desplegable(
-            modelos, ("modelos", "dispositivo"), "Dispositivo", inicial[("modelos", "dispositivo")],
-            ("auto", "cuda", "cpu"),
-        )
-        self._entrada(modelos, ("modelos", "resumen"), "Modelo de resumen", inicial[("modelos", "resumen")])
         self._entrada(
             modelos,
             ("modelos", "contexto_resumen"),
             "Contexto",
             inicial[("modelos", "contexto_resumen")],
+        )
+        self._entrada(
+            modelos,
+            ("modelos", "temperatura"),
+            "Temperatura",
+            inicial[("modelos", "temperatura")],
+        )
+        self._entrada(
+            modelos,
+            ("modelos", "tokens_por_bloque"),
+            "Tamaño de tramo",
+            inicial[("modelos", "tokens_por_bloque")],
+        )
+        self._entrada(
+            modelos,
+            ("modelos", "url_ollama"),
+            "URL de Ollama",
+            inicial[("modelos", "url_ollama")],
         )
 
         discord = ttk.LabelFrame(marco, text="Discord", padding=8)
@@ -493,12 +713,13 @@ class Ventana:
         jugadores.pack(fill=tk.X, pady=(8, 0))
         ttk.Label(
             jugadores,
-            text="Un «usuario = personaje» por línea. Si falta, se usa el nick de Discord.",
+            text="Un «usuario = personaje» por línea.",
             foreground=NEUTRO,
-            wraplength=560,
         ).pack(anchor=tk.W, pady=(0, 4))
         self.jugadores = tk.Text(jugadores, height=5, font=("Consolas", 9))
         self.jugadores.pack(fill=tk.X)
+        explicar(self.jugadores, ("jugadores",))
+        explicar(jugadores, ("jugadores",))
         self.jugadores.insert(
             "1.0",
             "\n".join(
@@ -529,25 +750,35 @@ class Ventana:
 
         return contenedor
 
-    def _entrada(self, padre, clave, etiqueta, valor, oculto: bool = False) -> None:
+    def _fila_de_campo(self, padre, clave, etiqueta):
+        """Etiqueta + hueco para el control, con la explicación colgada."""
         fila = ttk.Frame(padre)
         fila.pack(fill=tk.X, pady=2)
-        ttk.Label(fila, text=etiqueta, width=18).pack(side=tk.LEFT)
+        rotulo = ttk.Label(fila, text=etiqueta, width=18)
+        rotulo.pack(side=tk.LEFT)
+        # La explicación va tanto en la etiqueta como en el control: el ratón
+        # puede acabar en cualquiera de los dos.
+        explicar(rotulo, clave)
+        return fila
+
+    def _entrada(self, padre, clave, etiqueta, valor, oculto: bool = False) -> None:
+        fila = self._fila_de_campo(padre, clave, etiqueta)
         variable = tk.StringVar(value=valor)
-        ttk.Entry(fila, textvariable=variable, show="•" if oculto else "").pack(
-            side=tk.LEFT, fill=tk.X, expand=True
-        )
+        casilla = ttk.Entry(fila, textvariable=variable, show="•" if oculto else "")
+        casilla.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        explicar(casilla, clave)
         self.campos[clave] = variable
 
     def _desplegable(self, padre, clave, etiqueta, valor, opciones) -> None:
-        fila = ttk.Frame(padre)
-        fila.pack(fill=tk.X, pady=2)
-        ttk.Label(fila, text=etiqueta, width=18).pack(side=tk.LEFT)
+        fila = self._fila_de_campo(padre, clave, etiqueta)
         variable = tk.StringVar(value=valor)
-        ttk.Combobox(
+        lista = ttk.Combobox(
             fila, textvariable=variable, values=list(opciones), state="readonly"
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        )
+        lista.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        explicar(lista, clave)
         self.campos[clave] = variable
+        self.desplegables[clave] = lista
 
     def _barra_inferior(self, padre) -> None:
         barra = ttk.Frame(padre, padding=(0, 8, 0, 0))
@@ -585,6 +816,7 @@ class Ventana:
         elif aviso.tipo == "servicios" and aviso.datos:
             for clave, (texto, color) in _estado_servicios(aviso.datos).items():
                 self.indicadores[clave].config(text=texto, foreground=color)
+            self._poner_modelos(aviso.datos.get("modelos_ollama") or [])
         elif aviso.tipo == "cola":
             self._pintar_barra(aviso.datos or {})
         elif aviso.tipo == "listas":
@@ -594,6 +826,23 @@ class Ventana:
         if self.configuracion.ejecucion == "automatico" and not self.cola.ocupada:
             self._en_hilo(self._buscar_nuevas)
         self.raiz.after(INTERVALO_BUSQUEDA_MS, self._busqueda_periodica)
+
+    def _poner_modelos(self, modelos: list[str]) -> None:
+        """Rellena el desplegable de modelos con lo que Ollama tenga.
+
+        El configurado se mantiene en la lista aunque Ollama ya no lo tenga:
+        si no, elegirlo de nuevo sería imposible y al guardar se perdería.
+        """
+        if not modelos:
+            return
+        self._modelos_ollama = modelos
+
+        lista = self.desplegables.get(("modelos", "resumen"))
+        if lista is None:
+            return
+        actual = self.campos[("modelos", "resumen")].get()
+        opciones = modelos if actual in modelos else [actual, *modelos]
+        lista.config(values=opciones)
 
     def _atender_a_otra_instancia(self) -> None:
         """Si alguien intentó abrir la aplicación otra vez, nos mostramos.
@@ -994,10 +1243,11 @@ class Ventana:
             ("general", "idioma"): c.idioma,
             ("general", "carpeta_resumenes"): str(c.carpeta_resumenes_extra or ""),
             ("modelos", "transcripcion"): m.transcripcion,
-            ("modelos", "precision"): m.precision,
-            ("modelos", "dispositivo"): m.dispositivo,
             ("modelos", "resumen"): m.resumen,
             ("modelos", "contexto_resumen"): str(m.contexto_resumen),
+            ("modelos", "temperatura"): str(m.temperatura),
+            ("modelos", "tokens_por_bloque"): str(m.tokens_por_bloque),
+            ("modelos", "url_ollama"): m.url_ollama,
             ("discord", "id_aplicacion"): d.id_aplicacion,
             ("discord", "token_bot"): d.token_bot,
             ("discord", "secreto_cliente"): d.secreto_cliente,
@@ -1020,16 +1270,28 @@ class Ventana:
     def _recoger_servicios(self) -> None:
         diag = docker_manager.diagnostico()
         gpu = dependencias.comprobar_gpu()
+        url = self.configuracion.modelos.url_ollama
+        ollama = resumidor.ollama_disponible(url)
+
+        # Sólo mientras la lista esté vacía: una vez poblada no hace falta
+        # volver a preguntar cada diez segundos.
+        modelos = (
+            resumidor.modelos_disponibles(url)
+            if ollama and not self._modelos_ollama
+            else []
+        )
+
         self._enviar(
             Aviso(
                 tipo="servicios",
                 datos={
+                    "modelos_ollama": modelos,
                     "docker": diag["docker_en_marcha"],
                     "docker_instalado": diag["docker_instalado"],
                     "craig": diag["craig_levantado"],
                     "craig_instalado": diag["craig_instalado"],
                     "craig_configurado": diag["craig_configurado"],
-                    "ollama": resumidor.ollama_disponible(),
+                    "ollama": ollama,
                     "ffmpeg": dependencias.comprobar_ffmpeg().disponible,
                     "gpu": gpu.disponible,
                     "gpu_nombre": gpu.ruta,

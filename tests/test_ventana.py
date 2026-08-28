@@ -330,3 +330,57 @@ def test_si_no_se_puede_abrir_se_dice_en_el_registro(ventana, monkeypatch):
     ventana._abrir_datos()
 
     assert escritos and "sin explorador" in escritos[0]
+
+
+# --- Ayuda emergente y modelos disponibles -----------------------------------
+
+
+def test_cada_ajuste_tiene_su_explicacion(ventana):
+    """Si se añade un campo sin explicación, este test lo caza."""
+    sin_ayuda = [c for c in ventana.campos if c not in gui.AYUDA]
+
+    assert not sin_ayuda, f"faltan explicaciones para: {sin_ayuda}"
+
+
+def test_la_explicacion_de_jugadores_existe():
+    # Estaba como etiqueta fija bajo el recuadro; ahora vive en el emergente.
+    assert ("jugadores",) in gui.AYUDA
+    assert "personaje" in gui.AYUDA[("jugadores",)]
+
+
+def test_el_modelo_de_resumen_es_un_desplegable(ventana):
+    assert ("modelos", "resumen") in ventana.desplegables
+
+
+def test_el_desplegable_empieza_con_lo_configurado(ventana):
+    lista = ventana.desplegables[("modelos", "resumen")]
+    actual = ventana.campos[("modelos", "resumen")].get()
+
+    assert actual in lista["values"]
+
+
+def test_se_rellena_con_lo_que_diga_ollama(ventana):
+    ventana._poner_modelos(["qwen3:8b", "llama3:8b"])
+
+    assert list(ventana.desplegables[("modelos", "resumen")]["values"]) == [
+        "qwen3:8b",
+        "llama3:8b",
+    ]
+
+
+def test_el_modelo_configurado_no_desaparece_de_la_lista(ventana):
+    """Aunque Ollama ya no lo tenga: si no, no se podría volver a elegir."""
+    ventana.campos[("modelos", "resumen")].set("uno-que-ya-no-esta")
+
+    ventana._poner_modelos(["llama3:8b"])
+
+    opciones = list(ventana.desplegables[("modelos", "resumen")]["values"])
+    assert opciones == ["uno-que-ya-no-esta", "llama3:8b"]
+
+
+def test_sin_respuesta_de_ollama_no_se_vacia_la_lista(ventana):
+    ventana._poner_modelos(["qwen3:8b"])
+
+    ventana._poner_modelos([])
+
+    assert list(ventana.desplegables[("modelos", "resumen")]["values"]) == ["qwen3:8b"]

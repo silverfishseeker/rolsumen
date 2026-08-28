@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 
+from ..config import TOKENS_POR_BLOQUE_POR_DEFECTO
 from .tipos import Bloque, Segmento
 
 # Estimación para español con tokenizadores tipo Qwen. Conservadora a propósito:
@@ -22,7 +23,7 @@ CARACTERES_POR_TOKEN = 3.0
 
 # En la ventana del modelo entran además las instrucciones (~400 tokens), el
 # resumen encadenado (~500) y la respuesta a generar (~1500).
-PRESUPUESTO_TOKENS_POR_BLOQUE = 4000
+PRESUPUESTO_TOKENS_POR_BLOQUE = TOKENS_POR_BLOQUE_POR_DEFECTO
 
 # Cuántos segmentos alrededor del corte ideal se exploran buscando una pausa.
 VENTANA_BUSQUEDA_PAUSA = 12

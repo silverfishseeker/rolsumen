@@ -66,7 +66,11 @@ Enfocar la ventana pide un rodeo, porque Windows no deja que un proceso le robe 
 
 ## Configuración
 
-Los cambios no se aplican hasta pulsar **Guardar**, que está desactivado mientras no haya nada que guardar; en cuanto se toca un campo aparece «Cambios sin guardar». **Valores predeterminados** rellena General y Modelos con los de fábrica, pero **no toca Discord ni Jugadores** —son datos del usuario, no ajustes— y tampoco guarda: deja los valores puestos para revisarlos, como cualquier otro cambio.
+Los cambios no se aplican hasta pulsar **Guardar**, que está desactivado mientras no haya nada que guardar; en cuanto se toca un campo aparece «Cambios sin guardar». **Cada ajuste se explica solo**: al dejar el ratón encima sale qué hace, qué valores admite y qué implica elegir cada uno.
+
+El modelo de resumen es un desplegable con los que Ollama tenga descargados; se piden en segundo plano en cuanto responde. El que esté configurado no desaparece de la lista aunque Ollama ya no lo tenga, para poder volver a elegirlo.
+
+`precision` y `dispositivo` **no salen en la ventana**: `auto` ya elige bien el dispositivo y `float16` es lo correcto salvo en GPUs con poca memoria. Siguen funcionando desde `config.ini`, marcados como avanzados. **Valores predeterminados** rellena General y Modelos con los de fábrica, pero **no toca Discord ni Jugadores** —son datos del usuario, no ajustes— y tampoco guarda: deja los valores puestos para revisarlos, como cualquier otro cambio.
 
 El pie con esos botones va fuera del área con desplazamiento: Guardar tiene que verse siempre, no al final de una lista larga que haya que bajar.
 

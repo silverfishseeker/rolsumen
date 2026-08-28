@@ -89,6 +89,9 @@ idioma = es
 #   base      muy rápido, poco fiable
 transcripcion = large-v3
 
+# --- Avanzado: estos dos no salen en la ventana ---------------------------
+# Los valores por defecto son los correctos salvo en GPUs con poca memoria.
+#
 # Precisión numérica de la transcripción. Afecta a la memoria de vídeo:
 #   float16       calidad máxima (recomendado con 8 GB de VRAM o más)
 #   int8_float16  ahorra memoria, casi misma calidad
@@ -96,7 +99,9 @@ transcripcion = large-v3
 precision = float16
 
 # Dónde transcribir: auto (usa la GPU si la hay), cuda o cpu.
+# `auto` ya elige bien; forzarlo sólo sirve para depurar.
 dispositivo = auto
+# -------------------------------------------------------------------------
 
 # Modelo de Ollama que redacta la crónica. Debe estar descargado
 # (comprobar con: ollama list).
@@ -107,6 +112,18 @@ resumen = qwen3:8b
 # sin memoria: si el contexto no cabe en la GPU, Ollama pasa capas a la CPU
 # y la generación se vuelve lentísima.
 contexto_resumen = {contexto}
+
+# Dónde escucha Ollama. Cámbialo sólo si lo has movido de puerto o corre en
+# otra máquina de la red.
+url_ollama = {url_ollama}
+
+# Cuánto se ciñe el modelo a los hechos. Más baja, más literal; más alta,
+# redacta con más libertad y arriesga inventar.
+temperatura = {temperatura}
+
+# Cuánta transcripción entra en cada tramo, en tokens. Más pequeño, crónica
+# más detallada y más lenta; más grande, más condensada.
+tokens_por_bloque = {tokens}
 
 [jugadores]
 # Asocia cada usuario de Discord con el nombre de su personaje.
@@ -139,6 +156,17 @@ class Credenciales:
 # desploma. Medido con qwen3:8b en 8 GB: 8192 va al 100% en GPU, 12288 ya no.
 CONTEXTO_POR_DEFECTO = 8192
 
+# Dónde escucha Ollama. Configurable por si se mueve de puerto o a otra máquina.
+URL_OLLAMA_POR_DEFECTO = "http://localhost:11434"
+
+# Baja a propósito: favorece la fidelidad a los hechos frente a la creatividad,
+# que en un acta consultable es justo lo que se quiere.
+TEMPERATURA_POR_DEFECTO = 0.3
+
+# Cuánta transcripción entra en cada tramo. Más pequeño, crónica más detallada
+# y más lenta; más grande, más condensada.
+TOKENS_POR_BLOQUE_POR_DEFECTO = 4000
+
 
 @dataclass
 class Modelos:
@@ -149,6 +177,9 @@ class Modelos:
     dispositivo: str = "auto"
     resumen: str = "qwen3:8b"
     contexto_resumen: int = CONTEXTO_POR_DEFECTO
+    url_ollama: str = URL_OLLAMA_POR_DEFECTO
+    temperatura: float = TEMPERATURA_POR_DEFECTO
+    tokens_por_bloque: int = TOKENS_POR_BLOQUE_POR_DEFECTO
 
     def dispositivo_efectivo(self) -> str:
         """Resuelve 'auto' mirando si hay GPU disponible."""
@@ -251,6 +282,9 @@ def plantilla_config() -> str:
         ejecuciones=_comentario_modos(DESCRIPCION_EJECUCION),
         ejecucion_por_defecto=EJECUCION_POR_DEFECTO,
         contexto=CONTEXTO_POR_DEFECTO,
+        url_ollama=URL_OLLAMA_POR_DEFECTO,
+        temperatura=TEMPERATURA_POR_DEFECTO,
+        tokens=TOKENS_POR_BLOQUE_POR_DEFECTO,
     )
 
 
@@ -274,6 +308,13 @@ def _texto(seccion, clave: str, defecto: str) -> str:
 def _entero(seccion, clave: str, defecto: int) -> int:
     try:
         return int(seccion.get(clave, "").strip()) or defecto
+    except ValueError:
+        return defecto
+
+
+def _decimal(seccion, clave: str, defecto: float) -> float:
+    try:
+        return float(seccion.get(clave, "").strip().replace(",", "."))
     except ValueError:
         return defecto
 
@@ -317,6 +358,11 @@ def cargar(ruta: Path = RUTA_CONFIG) -> Config:
             resumen=_texto(m, "resumen", por_defecto.resumen),
             contexto_resumen=_entero(
                 m, "contexto_resumen", por_defecto.contexto_resumen
+            ),
+            url_ollama=_texto(m, "url_ollama", por_defecto.url_ollama),
+            temperatura=_decimal(m, "temperatura", por_defecto.temperatura),
+            tokens_por_bloque=_entero(
+                m, "tokens_por_bloque", por_defecto.tokens_por_bloque
             ),
         )
 

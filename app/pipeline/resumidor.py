@@ -21,11 +21,17 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Callable
 
-from ..config import CONTEXTO_POR_DEFECTO, DIR_PROMPTS, MODO_POR_DEFECTO
+from ..config import (
+    CONTEXTO_POR_DEFECTO,
+    DIR_PROMPTS,
+    MODO_POR_DEFECTO,
+    TEMPERATURA_POR_DEFECTO,
+    URL_OLLAMA_POR_DEFECTO,
+)
 from .tipos import Bloque
 from .troceador import CARACTERES_POR_TOKEN
 
-URL_OLLAMA = "http://localhost:11434"
+URL_OLLAMA = URL_OLLAMA_POR_DEFECTO
 
 # El valor y su porqué están en config; aquí solo se reexporta el nombre que
 # usan las funciones de este módulo.
@@ -39,8 +45,8 @@ TIMEOUT_SEGUNDOS = 1800
 # así que producirlo es tiempo tirado: medido, >300 s con él y 19 s sin él.
 PENSAR = False
 
-# Baja para favorecer la fidelidad a los hechos frente a la creatividad.
-TEMPERATURA = 0.3
+# El valor y su porqué están en config; aquí sólo se reexporta el nombre.
+TEMPERATURA = TEMPERATURA_POR_DEFECTO
 
 _PATRON_PENSAMIENTO = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
@@ -102,13 +108,18 @@ def modelos_disponibles(url: str = URL_OLLAMA, timeout: float = 5.0) -> list[str
 
 
 def _peticion(
-    prompt: str, modelo: str, url: str, contexto: int, pensar: bool | None
+    prompt: str,
+    modelo: str,
+    url: str,
+    contexto: int,
+    pensar: bool | None,
+    temperatura: float = TEMPERATURA,
 ) -> urllib.request.Request:
     cuerpo: dict = {
         "model": modelo,
         "prompt": prompt,
         "stream": False,
-        "options": {"num_ctx": contexto, "temperature": TEMPERATURA},
+        "options": {"num_ctx": contexto, "temperature": temperatura},
     }
     if pensar is not None:
         cuerpo["think"] = pensar
@@ -139,15 +150,21 @@ def generar(
     url: str = URL_OLLAMA,
     contexto: int = CONTEXTO_OLLAMA,
     timeout: int = TIMEOUT_SEGUNDOS,
+    temperatura: float = TEMPERATURA,
 ) -> str:
     try:
-        return _pedir(_peticion(prompt, modelo, url, contexto, PENSAR), timeout)
+        return _pedir(
+            _peticion(prompt, modelo, url, contexto, PENSAR, temperatura), timeout
+        )
     except urllib.error.HTTPError as exc:
         detalle = exc.read().decode("utf-8", errors="replace")
         if exc.code == 400 and "think" in detalle.lower():
             # Ollama o modelo antiguo que no conoce el parámetro.
             try:
-                return _pedir(_peticion(prompt, modelo, url, contexto, None), timeout)
+                return _pedir(
+                    _peticion(prompt, modelo, url, contexto, None, temperatura),
+                    timeout,
+                )
             except (urllib.error.URLError, OSError, json.JSONDecodeError) as fallo:
                 raise ErrorOllama(f"Ollama falló al generar: {fallo}") from fallo
         raise ErrorOllama(f"Ollama respondió {exc.code}: {detalle}") from exc
@@ -216,6 +233,7 @@ def resumir_bloques(
     url: str = URL_OLLAMA,
     contexto_modelo: int = CONTEXTO_OLLAMA,
     modo: str = MODO_POR_DEFECTO,
+    temperatura: float = TEMPERATURA,
     avisar: Callable[[str], None] | None = None,
     entre_bloques: Callable[[], None] | None = None,
 ) -> list[str]:
@@ -232,6 +250,7 @@ def resumir_bloques(
             modelo=modelo,
             url=url,
             contexto=contexto_modelo,
+            temperatura=temperatura,
         )
         tramos.append(tramo)
         anterior = _resumir_contexto(tramo)
@@ -245,6 +264,7 @@ def generar_cabecera(
     url: str = URL_OLLAMA,
     contexto: int = CONTEXTO_OLLAMA,
     modo: str = MODO_POR_DEFECTO,
+    temperatura: float = TEMPERATURA,
     avisar: Callable[[str], None] | None = None,
 ) -> str:
     if avisar:
@@ -256,7 +276,9 @@ def generar_cabecera(
         f"{_cronica_para_cabecera(tramos, contexto)}\n"
         "--- FIN DE LA CRÓNICA ---\n"
     )
-    return generar(prompt, modelo=modelo, url=url, contexto=contexto)
+    return generar(
+        prompt, modelo=modelo, url=url, contexto=contexto, temperatura=temperatura
+    )
 
 
 def _reloj(segundos: float) -> str:
@@ -307,6 +329,7 @@ def resumir(
     url: str = URL_OLLAMA,
     contexto: int = CONTEXTO_OLLAMA,
     modo: str = MODO_POR_DEFECTO,
+    temperatura: float = TEMPERATURA,
     avisar: Callable[[str], None] | None = None,
     entre_bloques: Callable[[], None] | None = None,
 ) -> ResultadoResumen:
@@ -319,11 +342,18 @@ def resumir(
         url=url,
         contexto_modelo=contexto,
         modo=modo,
+        temperatura=temperatura,
         avisar=avisar,
         entre_bloques=entre_bloques,
     )
     cabecera = generar_cabecera(
-        tramos, modelo=modelo, url=url, contexto=contexto, modo=modo, avisar=avisar
+        tramos,
+        modelo=modelo,
+        url=url,
+        contexto=contexto,
+        modo=modo,
+        temperatura=temperatura,
+        avisar=avisar,
     )
 
     return ResultadoResumen(

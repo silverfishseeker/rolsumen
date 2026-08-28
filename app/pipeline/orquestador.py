@@ -202,7 +202,8 @@ def _combinar_y_resumir(
         combinador.a_texto(linea), encoding="utf-8"
     )
 
-    bloques = troceador.trocear(linea)
+    modelos = configuracion.modelos
+    bloques = troceador.trocear(linea, presupuesto=modelos.tokens_por_bloque)
     avisar(f"Transcripción dividida en {len(bloques)} tramo(s).")
 
     resultado = resumidor.resumir(
@@ -213,8 +214,10 @@ def _combinar_y_resumir(
             "Duración": _formatear_duracion(linea[-1].fin),
             "Participantes": ", ".join(sorted({s.hablante for s in linea})),
         },
-        modelo=configuracion.modelos.resumen,
-        contexto=configuracion.modelos.contexto_resumen,
+        modelo=modelos.resumen,
+        url=modelos.url_ollama,
+        contexto=modelos.contexto_resumen,
+        temperatura=modelos.temperatura,
         modo=configuracion.modo,
         avisar=avisar,
         entre_bloques=lambda: _rendirse_si_cancelado(cancelado),
