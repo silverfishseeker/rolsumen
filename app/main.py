@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -22,6 +23,14 @@ def main(argv: list[str] | None = None) -> int:
         help="procesa las grabaciones pendientes sin abrir la ventana",
     )
     parser.add_argument(
+        "--paquetes",
+        metavar="RUTA",
+        help=(
+            "carpeta de paquetes adicional. La usa el acceso directo para "
+            "prestarle las dependencias a un intérprete que no las tenga"
+        ),
+    )
+    parser.add_argument(
         "--rehacer",
         metavar="SESION",
         help=(
@@ -30,6 +39,10 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     argumentos = parser.parse_args(argv)
+
+    # Antes de importar nada que dependa de ellos.
+    if argumentos.paquetes:
+        _prestar_paquetes(argumentos.paquetes)
 
     if argumentos.rehacer:
         return _modo_rehacer(argumentos.rehacer)
@@ -40,6 +53,19 @@ def main(argv: list[str] | None = None) -> int:
 
     lanzar()
     return 0
+
+
+def _prestar_paquetes(ruta: str) -> None:
+    """Añade una carpeta de paquetes al principio de la búsqueda.
+
+    El acceso directo apunta a un Python no empaquetado —el de Microsoft Store
+    arrastra una identidad que estropea el icono de la barra de tareas— y ese
+    intérprete puede no tener instaladas las dependencias. En vez de duplicar
+    varios gigas, se le presta la carpeta del que sí las tiene.
+    """
+    carpeta = Path(ruta)
+    if carpeta.is_dir() and str(carpeta) not in sys.path:
+        sys.path.insert(0, str(carpeta))
 
 
 def _avisar(texto: str) -> None:

@@ -32,6 +32,10 @@ from .craig_client import ErrorCraig
 from .procesos import SIN_CONSOLA
 from .pipeline.cola import RESUMIR, TRANSCRIBIR, Cola, Tarea
 
+# Tamaño de la ventana a escala 100%; se multiplica por el escalado del monitor.
+ANCHO, ALTO = 760, 600
+ANCHO_MINIMO, ALTO_MINIMO = 660, 500
+
 INTERVALO_BUSQUEDA_MS = 60_000
 INTERVALO_COLA_MS = 100
 INTERVALO_ESTADO_MS = 10_000
@@ -122,6 +126,75 @@ def _identificar_aplicacion() -> None:
         pass
 
 
+def _hacerse_consciente_del_dpi() -> None:
+    """Pide renderizar a la resolución real del monitor.
+
+    El Python de Microsoft Store viene marcado como consciente del DPI, pero el
+    normal no. Sin esto, en una pantalla al 150% Windows dibuja la ventana a
+    100% y luego la estira: todo sale borroso. Hay que llamarlo antes de crear
+    la ventana.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        # 2 = PROCESS_PER_MONITOR_DPI_AWARE. Si el proceso ya venía marcado
+        # (el de la Store lo está), devuelve error y no pasa nada.
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError, NameError):
+            pass
+
+
+def tamano_escalado(puntos: int) -> tuple[int, int, int, int]:
+    """Ancho, alto y mínimos para un DPI dado. 96 es el 100%."""
+    factor = puntos / 96
+    return (
+        round(ANCHO * factor),
+        round(ALTO * factor),
+        round(ANCHO_MINIMO * factor),
+        round(ALTO_MINIMO * factor),
+    )
+
+
+def puntos_por_pulgada(raiz: tk.Tk) -> int:
+    """DPI del monitor donde está la ventana. 96 es el 100%."""
+    if sys.platform != "win32":
+        return 96
+    try:
+        import ctypes
+
+        raiz.update_idletasks()
+        return ctypes.windll.user32.GetDpiForWindow(raiz.winfo_id()) or 96
+    except (AttributeError, OSError, tk.TclError):
+        return 96
+
+
+def _ajustar_escalado(raiz: tk.Tk) -> None:
+    """Agranda la interfaz en la misma proporción que el escalado de Windows.
+
+    Ser consciente del DPI hace que se dibuje nítido, pero tkinter no agranda
+    nada por su cuenta. Hay que escalar dos cosas y es fácil olvidar la segunda:
+    las fuentes (`tk scaling`) **y el tamaño de la ventana**. Con sólo lo
+    primero, el texto crece dentro de una ventana que no, y se corta.
+    """
+    puntos = puntos_por_pulgada(raiz)
+    if puntos == 96:
+        return
+
+    try:
+        raiz.tk.call("tk", "scaling", puntos / 72.0)
+    except tk.TclError:
+        return
+
+    ancho, alto, ancho_minimo, alto_minimo = tamano_escalado(puntos)
+    raiz.geometry(f"{ancho}x{alto}")
+    raiz.minsize(ancho_minimo, alto_minimo)
+
+
 def _aplicar_icono(raiz: tk.Tk) -> None:
     """Pone el icono en la ventana y en la barra de tareas.
 
@@ -145,17 +218,21 @@ def _aplicar_icono(raiz: tk.Tk) -> None:
         # winfo_id() da la ventana interna; la de la barra de tareas es su padre.
         ventana = usuario.GetParent(raiz.winfo_id()) or raiz.winfo_id()
 
-        IMAGE_ICON, LR_LOADFROMFILE, LR_DEFAULTSIZE = 1, 0x10, 0x40
+        IMAGE_ICON, LR_LOADFROMFILE = 1, 0x10
         WM_SETICON, ICON_SMALL, ICON_BIG = 0x0080, 0, 1
+        # El tamaño depende del escalado: a 150% el sistema pide 48 y 24, no
+        # 32 y 16. Pedirlo por métrica evita que Windows reescale a ojo.
+        SM_CXICON, SM_CXSMICON = 11, 49
 
-        for cual, medida in ((ICON_SMALL, 16), (ICON_BIG, 32)):
+        for cual, metrica in ((ICON_SMALL, SM_CXSMICON), (ICON_BIG, SM_CXICON)):
+            medida = usuario.GetSystemMetrics(metrica) or 32
             icono = usuario.LoadImageW(
                 None,
                 str(cfg.RUTA_ICONO),
                 IMAGE_ICON,
                 medida,
                 medida,
-                LR_LOADFROMFILE | LR_DEFAULTSIZE,
+                LR_LOADFROMFILE,
             )
             if icono:
                 usuario.SendMessageW(ventana, WM_SETICON, cual, icono)
@@ -200,8 +277,8 @@ class Ventana:
 
         raiz.title("Rolsumen")
         _aplicar_icono(raiz)
-        raiz.geometry("760x600")
-        raiz.minsize(660, 500)
+        raiz.geometry(f"{ANCHO}x{ALTO}")
+        raiz.minsize(ANCHO_MINIMO, ALTO_MINIMO)
         raiz.protocol("WM_DELETE_WINDOW", self._al_cerrar)
 
         self._construir()
@@ -875,10 +952,21 @@ class Ventana:
 def lanzar() -> None:
     # Antes que nada: si no, la barra de tareas se queda con el icono de Python.
     _identificar_aplicacion()
+    _hacerse_consciente_del_dpi()
     raiz = tk.Tk()
+
+    # La ventana se construye oculta y se muestra al final. Windows fija el
+    # icono del botón de la barra de tareas cuando la ventana aparece por
+    # primera vez; si aparece antes de que le pongamos el nuestro, se queda con
+    # el del intérprete aunque después lo cambiemos.
+    raiz.withdraw()
+
     try:
         ttk.Style().theme_use("vista")
     except tk.TclError:
         pass
+
     Ventana(raiz)
+    _ajustar_escalado(raiz)
+    raiz.deiconify()
     raiz.mainloop()

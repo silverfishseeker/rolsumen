@@ -180,3 +180,35 @@ def test_la_ventana_lleva_sus_dos_iconos(ventana):
 
     assert grande, "sin icono grande la barra de tareas usa el de Python"
     assert pequeno, "falta el icono pequeño de la barra de título"
+
+
+# --- Escalado en pantallas con DPI alto --------------------------------------
+
+
+def test_a_escala_normal_no_se_cambia_el_tamano():
+    assert gui.tamano_escalado(96) == (gui.ANCHO, gui.ALTO,
+                                       gui.ANCHO_MINIMO, gui.ALTO_MINIMO)
+
+
+def test_al_150_por_ciento_la_ventana_crece_igual():
+    """Escalar solo las fuentes deja el texto grande en una ventana pequeña.
+
+    Es lo que pasaba: el contenido se salía y la barra inferior quedaba cortada.
+    """
+    ancho, alto, _, _ = gui.tamano_escalado(144)
+
+    assert (ancho, alto) == (round(gui.ANCHO * 1.5), round(gui.ALTO * 1.5))
+
+
+def test_los_minimos_escalan_tambien():
+    _, _, ancho_min, alto_min = gui.tamano_escalado(192)
+
+    assert (ancho_min, alto_min) == (gui.ANCHO_MINIMO * 2, gui.ALTO_MINIMO * 2)
+
+
+def test_el_escalado_de_fuentes_acompana(raiz, monkeypatch):
+    monkeypatch.setattr(gui, "puntos_por_pulgada", lambda _r: 144)
+
+    gui._ajustar_escalado(raiz)
+
+    assert float(raiz.tk.call("tk", "scaling")) == pytest.approx(144 / 72.0, rel=0.01)

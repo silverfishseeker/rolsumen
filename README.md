@@ -63,7 +63,15 @@ Al hacerlo, se aplican también los ajustes que Craig necesita para funcionar de
 
 El icono (`app/recursos/rolsumen.ico`) es un d20, y se dibuja por separado para cada tamaño que pide Windows: a 16 px, que es el de la barra de tareas, un trazo del 2% se queda en un tercio de píxel y el dado se convierte en una mancha dorada, así que los tamaños pequeños llevan el trazo más grueso. Se regenera con `python -m app.recursos.generar_icono`.
 
-Para que la barra de tareas use ese icono y no el de Python no basta con ponérselo a la ventana: hay que declarar un identificador de aplicación propio con `SetCurrentProcessExplicitAppUserModelID`, y **antes de crear la primera ventana**. Hacerlo después no surte efecto.
+### El icono de la barra de tareas y el Python de Microsoft Store
+
+Que la ventana tenga su icono **no basta** para que la barra de tareas lo use, y la causa tardó en aparecer: el Python de Microsoft Store se ejecuta como paquete MSIX, y Windows le impone la identidad y el icono del paquete, ignorando lo que declare el proceso. Comprobado midiendo: `GetPackageFamilyName` devuelve `PythonSoftwareFoundation.Python.3.10`, y los mismos archivos lanzados con un Python normal muestran el icono correcto.
+
+Ni `SetCurrentProcessExplicitAppUserModelID`, ni `WM_SETICON`, ni marcar el acceso directo con `System.AppUserModel.ID` cambian nada mientras el intérprete sea el empaquetado. Un entorno virtual creado desde él **tampoco** escapa: hereda la identidad del paquete.
+
+Por eso `app/acceso_directo.py` busca un intérprete no empaquetado. Si a ese le faltan las dependencias, se le prestan las del actual con `--paquetes` en vez de duplicar los ~2,5 GB de torch.
+
+Ese Python normal, además, no viene marcado como consciente del DPI. Sin arreglarlo, en una pantalla al 150% Windows dibuja la ventana al 100% y la estira: todo borroso. La aplicación lo declara al arrancar y escala **dos** cosas, que es fácil olvidar la segunda: las fuentes (`tk scaling`) y el tamaño de la ventana. Con sólo lo primero, el texto crece dentro de una ventana que no y el contenido se corta.
 
 ## La ventana
 

@@ -9,6 +9,8 @@ import sys
 
 import pytest
 
+from pathlib import Path
+
 from app import acceso_directo
 from app import config as cfg
 from app import gui
@@ -64,21 +66,61 @@ def test_el_identificador_de_aplicacion_se_fija():
     assert buffer.value == gui.ID_APLICACION
 
 
-def test_el_acceso_directo_apunta_al_interprete_sin_consola(monkeypatch, tmp_path):
-    """`pythonw.exe` evita la ventana de consola negra detrás de la aplicación."""
-    falso = tmp_path / "pythonw.exe"
-    falso.write_text("", encoding="utf-8")
-    monkeypatch.setattr(acceso_directo.sys, "executable", str(tmp_path / "python.exe"))
+def test_se_prefiere_un_interprete_no_empaquetado(monkeypatch, tmp_path):
+    """El de Microsoft Store arrastra la identidad MSIX del paquete.
 
-    assert acceso_directo.interprete_sin_consola() == falso
-
-
-def test_si_no_hay_pythonw_se_usa_el_interprete_normal(monkeypatch, tmp_path):
-    normal = tmp_path / "python.exe"
+    Windows le impone entonces el icono del paquete e ignora lo que declare el
+    proceso, así que en la barra de tareas se ve el de Python. Un intérprete
+    normal no tiene ese problema.
+    """
+    normal = tmp_path / "Python310" / "pythonw.exe"
+    normal.parent.mkdir()
     normal.write_text("", encoding="utf-8")
-    monkeypatch.setattr(acceso_directo.sys, "executable", str(normal))
+    tienda = tmp_path / "WindowsApps" / "pythonw.exe"
+    tienda.parent.mkdir()
+    tienda.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(acceso_directo, "candidatos", lambda: [tienda, normal])
 
     assert acceso_directo.interprete_sin_consola() == normal
+
+
+def test_si_solo_hay_uno_empaquetado_se_usa_ese(monkeypatch, tmp_path):
+    # Peor icono, pero la aplicación tiene que poder abrirse igualmente.
+    tienda = tmp_path / "WindowsApps" / "pythonw.exe"
+    tienda.parent.mkdir()
+    tienda.write_text("", encoding="utf-8")
+    monkeypatch.setattr(acceso_directo, "candidatos", lambda: [tienda])
+
+    assert acceso_directo.interprete_sin_consola() == tienda
+
+
+def test_se_reconoce_lo_empaquetado_por_su_carpeta():
+    empaquetado = Path("C:/x/WindowsApps/pythonw.exe")
+    normal = Path("C:/Users/x/Programs/Python310/pythonw.exe")
+
+    assert acceso_directo._es_empaquetado(empaquetado)
+    assert not acceso_directo._es_empaquetado(normal)
+
+
+def test_no_se_prestan_paquetes_si_el_interprete_ya_los_tiene(monkeypatch, tmp_path):
+    otro = tmp_path / "pythonw.exe"
+    otro.write_text("", encoding="utf-8")
+    monkeypatch.setattr(acceso_directo, "_tiene_las_dependencias", lambda _i: True)
+
+    assert acceso_directo.paquetes_prestados(otro) == ""
+
+
+def test_se_prestan_los_paquetes_del_interprete_actual(monkeypatch, tmp_path):
+    """Evita duplicar varios gigas de torch para un intérprete distinto."""
+    otro = tmp_path / "pythonw.exe"
+    otro.write_text("", encoding="utf-8")
+    monkeypatch.setattr(acceso_directo, "_tiene_las_dependencias", lambda _i: False)
+    monkeypatch.setattr(
+        acceso_directo.site, "getusersitepackages", lambda: "C:/paquetes"
+    )
+
+    assert acceso_directo.paquetes_prestados(otro) == "C:/paquetes"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="los .lnk son de Windows")
