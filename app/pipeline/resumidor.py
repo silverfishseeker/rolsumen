@@ -217,11 +217,14 @@ def resumir_bloques(
     contexto_modelo: int = CONTEXTO_OLLAMA,
     modo: str = MODO_POR_DEFECTO,
     avisar: Callable[[str], None] | None = None,
+    entre_bloques: Callable[[], None] | None = None,
 ) -> list[str]:
     tramos: list[str] = []
     anterior: str | None = None
 
     for bloque in bloques:
+        if entre_bloques:
+            entre_bloques()
         if avisar:
             avisar(f"Resumiendo tramo {bloque.indice} de {bloque.total}...")
         tramo = generar(
@@ -305,6 +308,7 @@ def resumir(
     contexto: int = CONTEXTO_OLLAMA,
     modo: str = MODO_POR_DEFECTO,
     avisar: Callable[[str], None] | None = None,
+    entre_bloques: Callable[[], None] | None = None,
 ) -> ResultadoResumen:
     if not bloques:
         raise ErrorOllama("No hay nada que resumir: la transcripción está vacía.")
@@ -316,6 +320,7 @@ def resumir(
         contexto_modelo=contexto,
         modo=modo,
         avisar=avisar,
+        entre_bloques=entre_bloques,
     )
     cabecera = generar_cabecera(
         tramos, modelo=modelo, url=url, contexto=contexto, modo=modo, avisar=avisar

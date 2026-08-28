@@ -7,7 +7,7 @@ arranque volvería a transcribir y resumir todo lo que hubiera en Craig.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 
@@ -41,9 +41,16 @@ class Registro:
             # Un registro corrupto no debe impedir arrancar: se empieza de cero.
             return registro
 
+        conocidos = {c.name for c in fields(Entrada)}
         for id_grabacion, bruto in datos.items():
+            if not isinstance(bruto, dict):
+                continue
             try:
-                registro.entradas[id_grabacion] = Entrada(**bruto)
+                # Se ignoran las claves que no conozcamos en vez de tirar la
+                # entrada entera: perderla haría reprocesar esa grabación.
+                registro.entradas[id_grabacion] = Entrada(
+                    **{k: v for k, v in bruto.items() if k in conocidos}
+                )
             except TypeError:
                 continue
         return registro

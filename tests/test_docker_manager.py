@@ -101,3 +101,30 @@ def test_craig_real_esta_instalado():
     if not Path(DIR_CRAIG).exists():
         return
     assert docker_manager.hay_compose(DIR_CRAIG) is True
+
+
+# --- Detener sin destruir ----------------------------------------------------
+
+
+def test_bajar_usa_stop_y_no_down(monkeypatch, tmp_path):
+    """`down` borra el contenedor, y con el el marcador /app/.installed.
+
+    Craig hace su instalacion completa al arrancar el contenedor (yarn, prisma,
+    compilar los binarios del cook) y la marca ahi. Destruir el contenedor al
+    cerrar la aplicacion obliga a repetirla entera: quince minutos en cada
+    arranque, medido.
+    """
+    (tmp_path / "docker-compose.yml").write_text("services: {}", encoding="utf-8")
+    ejecutados = []
+
+    monkeypatch.setattr(
+        docker_manager,
+        "_ejecutar",
+        lambda args, cwd=None: ejecutados.append(args)
+        or docker_manager.ResultadoComando(True, "", ""),
+    )
+
+    docker_manager.bajar(tmp_path)
+
+    assert ejecutados == [["docker", "compose", "stop"]]
+    assert not any("down" in a for a in ejecutados[0])

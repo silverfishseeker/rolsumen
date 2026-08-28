@@ -26,6 +26,9 @@ REPO_CRAIG = "https://github.com/CraigChat/craig.git"
 
 NOMBRE_OVERRIDE = "docker-compose.override.yml"
 
+# Reconstruir la imagen de Craig son varios minutos.
+TIMEOUT_RECONSTRUIR = 1800
+
 # Docker Compose fusiona este archivo con el de Craig automáticamente, así que
 # la corrección sobrevive a una actualización suya sin tocar sus archivos.
 COMPOSE_OVERRIDE = """\
@@ -163,6 +166,51 @@ def apuntar_redis_a_docker(destino: Path = DIR_CRAIG) -> list[Path]:
     return parcheados
 
 
+def imagen_desactualizada(destino: Path = DIR_CRAIG) -> bool | None:
+    """¿La imagen de Craig lleva dentro el arreglo de Redis?
+
+    `/app` sale de la imagen, no del clon del host, así que parchear los
+    archivos de aquí no basta: mientras la imagen conserve `redis: {}`, cada
+    contenedor nuevo revive el fallo, porque `install.sh` regenera `default.js`
+    desde una plantilla sin parchear.
+
+    Devuelve None si no se pudo averiguar. **No se confunde con False**: dar por
+    buena una imagen que no se ha podido mirar es como se cuela este fallo.
+    """
+    try:
+        proceso = subprocess.run(
+            ["docker", "compose", "run", "--rm", "--no-deps", "--entrypoint",
+             "grep", "craig", "-c", REDIS_VACIO, CONFIGS_A_PARCHEAR[0]],
+            cwd=str(destino),
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_RECONSTRUIR,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+    # `grep -c` escribe el número de coincidencias; cualquier otra cosa
+    # significa que falló el propio docker, no que la imagen esté bien.
+    salida = (proceso.stdout or "").strip().splitlines()
+    numeros = [l for l in salida if l.strip().isdigit()]
+    if not numeros:
+        return None
+    return int(numeros[-1]) > 0
+
+
+def reconstruir_imagen(destino: Path = DIR_CRAIG) -> bool:
+    """Rehace la imagen para que los arreglos del host queden dentro."""
+    try:
+        proceso = subprocess.run(
+            ["docker", "compose", "build", "craig"],
+            cwd=str(destino),
+            timeout=TIMEOUT_RECONSTRUIR,
+        )
+        return proceso.returncode == 0
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
 def crear_config(
     destino: Path = DIR_CRAIG, app_id: str = "", forzar: bool = False
 ) -> Path:
@@ -263,8 +311,29 @@ def main(argv: list[str] | None = None) -> int:
     clonar()
     crear_override(forzar=argumentos.rehacer_config)
 
-    for ruta in apuntar_redis_a_docker():
+    parcheados = apuntar_redis_a_docker()
+    for ruta in parcheados:
         print(f"Ajustado Redis en {ruta.relative_to(DIR_CRAIG)}")
+
+    obsoleta = imagen_desactualizada()
+    if obsoleta is None and not parcheados:
+        print(
+            "AVISO: no se pudo comprobar si la imagen de Craig lleva el arreglo "
+            "de Redis. Si el bot no conecta, reconstrúyela con:\n"
+            "  docker compose build craig",
+            file=sys.stderr,
+        )
+    elif parcheados or obsoleta:
+        print("La imagen de Craig no incluye el arreglo de Redis; reconstruyendo...")
+        if reconstruir_imagen():
+            print("Imagen reconstruida.")
+        else:
+            print(
+                "AVISO: no se pudo reconstruir la imagen. El bot fallará con "
+                "ECONNREFUSED 127.0.0.1:6379 hasta que se haga:\n"
+                "  docker compose build craig",
+                file=sys.stderr,
+            )
 
     config = crear_config(forzar=argumentos.rehacer_config)
 

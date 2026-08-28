@@ -54,6 +54,38 @@ La aplicación las copia sola al `install.config` interno de Craig antes de arra
 
 Al hacerlo, se aplican también los ajustes que Craig necesita para funcionar dentro de Docker: su `install.config.example` apunta la base de datos a `localhost:5432`, que **no funciona** dentro de un contenedor, y debe ser `db:5432` (el nombre del servicio en `docker-compose.yml`). Lo mismo con Redis.
 
+## La ventana
+
+Tres pestañas y una barra inferior siempre visible.
+
+**Trabajo** — las tres listas de lo que hay: grabaciones en Craig, transcripciones guardadas y crónicas generadas. Se selecciona una fila de cualquiera de ellas y el botón grande cambia según lo que toque: *Transcribir*, *Resumir* o *Abrir* (esta última abre la crónica con el editor de texto del sistema). Cada fila indica en qué estado está.
+
+**Estado** — los servicios (Docker, Craig, Ollama, ffmpeg, GPU) y el registro de actividad.
+
+**Configuración** — todo lo de `config.ini` sin salir de la aplicación. Al guardar se sustituyen solo los valores: **los comentarios del archivo se conservan**, así que sigue siendo editable a mano.
+
+La barra inferior muestra en qué se está trabajando, cuántas tareas esperan turno, el modo de ejecución y un botón para cancelar la tarea en curso.
+
+### Automático o manual
+
+Se elige en `config.ini` (`[general] ejecucion`) o en la pestaña de configuración.
+
+- **automático** — al abrirse se queda esperando. Cuando termina una grabación en Craig, la transcribe y la resume sin intervención. **Las grabaciones anteriores a abrir la aplicación no se tocan**: si quieres procesar una del historial, se lanza a mano desde la pestaña Trabajo.
+- **manual** — no hace nada por su cuenta; cada paso se lanza desde la pestaña Trabajo.
+
+### Una tarea cada vez
+
+Las tareas se encolan y se ejecutan en serie. No es una limitación de diseño sino de memoria de vídeo, medida en la GPU de 8 GB de referencia:
+
+| | VRAM |
+|---|---|
+| Whisper large-v3 (float16) | 4,0 GB |
+| Ollama qwen3:8b @ 8192 de contexto | 5,8 GB |
+
+Dos tareas de GPU a la vez piden 9,8 GB y no caben; dos transcripciones se quedan en 8,1 GB, también por encima. Con lo que hay, ejecutarlas en paralelo solo conseguiría que Ollama descargase capas a la CPU y la generación se desplomara.
+
+Cancelar afecta únicamente a la tarea en curso: la cola continúa con la siguiente.
+
 Si algo no arranca, este comando revisa todos los requisitos por orden y dice cuál falla:
 
 ```bash
@@ -84,8 +116,8 @@ python -m pytest tests/ -q
 ```
 ┌─────────────────────────────────────────────┐
 │  Aplicación orquestadora (Python + tkinter) │
-│  · GUI informativa: estado y progreso       │
-│  · Trabajo pesado en hilo aparte            │
+│  · Trabajo / Estado / Configuración         │
+│  · Cola en serie, una tarea cada vez        │
 └───┬──────────────┬──────────────┬───────────┘
     │              │              │
     │ docker       │ transcribe   │ HTTP
@@ -99,7 +131,13 @@ python -m pytest tests/ -q
 
 **Pipeline:** Craig (audio multipista) → Whisper (transcripción por pista) → combinado por marcas de tiempo → Ollama (cronología) → Markdown.
 
-La aplicación ejecuta `docker compose up -d` al abrirse y `docker compose down` al cerrarse, para no tener Craig corriendo permanentemente. Los datos (base de datos, grabaciones) sobreviven entre sesiones.
+La aplicación ejecuta `docker compose up -d` al abrirse y `docker compose stop` al cerrarse, para no tener Craig corriendo permanentemente. Los datos (base de datos, grabaciones) sobreviven entre sesiones.
+
+Es `stop` y no `down` por una razón medida: Craig hace su instalación completa —yarn, prisma, compilar los binarios del `cook`— **al arrancar el contenedor**, no al construir la imagen, y lo marca con `/app/.installed` en su capa de escritura. `down` borra el contenedor y con él el marcador, así que la instalación entera se repite: unos 15 minutos.
+
+Con `stop`, cerrar y reabrir la aplicación tarda **6 segundos**. No es una garantía absoluta: se ha observado que un reinicio de Docker Desktop (o suspender el equipo) puede vaciar igualmente la capa de escritura del contenedor y disparar la reinstalación. Pero en el uso normal —abrir, grabar, cerrar— el arranque es inmediato.
+
+Por el mismo motivo, el `docker-compose.override.yml` fija `restart: "no"` en los tres servicios: Craig trae `restart: always`, que devuelve los contenedores a la vida al arrancar Docker Desktop aunque Rolsumen esté cerrado.
 
 ## Decisiones de diseño
 
@@ -117,6 +155,14 @@ Alternativas descartadas:
 | Bot de grabación propio | Reinventar la captura de audio por usuario en Discord, que es la parte técnicamente difícil que Craig ya resuelve |
 | Grabar el audio del sistema | Da un único stream mezclado; requeriría diarización, que falla justo cuando la gente se pisa — constante en una partida de rol |
 | Automatizar `/join` o la descarga del DM | Exigiría simular a un usuario (*self-bot*), prohibido por Discord y motivo de baneo |
+
+### La imagen de Craig hay que reconstruirla tras parchearla
+
+`/app` dentro del contenedor sale de la **imagen**, no del clon del host. El arreglo de Redis se aplica a los archivos del clon, así que mientras la imagen conserve el `redis: {}` original, cada contenedor nuevo revive el fallo: `install.sh` regenera `default.js` desde una plantilla sin parchear y el bot se queda sin conectar, llenando el log de `ECONNREFUSED 127.0.0.1:6379`.
+
+`python -m app.instalar_craig` lo detecta y reconstruye solo. A mano sería `docker compose build craig`.
+
+**Cuidado:** `_default.js` es la *plantilla*; `install.sh` la copia a `default.js` y le sustituye el token y el Application ID. Copiar la plantilla encima del generado borra las credenciales y el bot falla con `Missing required token`. Además el archivo tiene dos `token: ''` y el primero es un ejemplo comentado, así que la sustitución va a partir del bloque `dexare:`.
 
 ### Transcripción: `faster-whisper` con `large-v3`
 
@@ -158,7 +204,7 @@ rolsumen/
 │
 ├── app/
 │   ├── main.py             # punto de entrada (GUI, o --consola)
-│   ├── gui.py              # ventana: estado de servicios y progreso
+│   ├── gui.py              # ventana: trabajo, estado y configuración
 │   ├── config.py           # lee config.ini y define las rutas
 │   ├── dependencias.py     # localiza ffmpeg y comprueba la GPU
 │   ├── docker_manager.py   # levanta y baja Craig
@@ -173,6 +219,7 @@ rolsumen/
 │   │
 │   ├── pipeline/
 │   │   ├── tipos.py        # Segmento y Bloque
+│   │   ├── cola.py         # tareas en serie, con cancelación
 │   │   ├── transcriptor.py # Whisper + filtrado de alucinaciones
 │   │   ├── combinador.py   # une las pistas en una línea de tiempo
 │   │   ├── troceador.py    # troceado adaptativo con corte en pausas

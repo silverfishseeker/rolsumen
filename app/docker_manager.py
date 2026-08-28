@@ -124,10 +124,20 @@ def levantar(dir_craig: Path = DIR_CRAIG, credenciales=None) -> ResultadoComando
 
 
 def bajar(dir_craig: Path = DIR_CRAIG) -> ResultadoComando:
-    """Para los contenedores sin borrar volúmenes: los datos sobreviven."""
+    """Detiene Craig conservando los contenedores.
+
+    Es `stop`, no `down`, y la diferencia son quince minutos en cada arranque:
+    Craig hace su instalación completa (yarn, prisma, compilar los binarios del
+    `cook`) al arrancar el contenedor, y deja el marcador `/app/.installed` en
+    su capa de escritura. `down` borra el contenedor y con él el marcador, así
+    que la instalación entera se repite en el siguiente `up`.
+
+    Detenidos siguen sin consumir nada, y con `restart: "no"` tampoco vuelven
+    solos al arrancar Docker Desktop.
+    """
     if not hay_compose(dir_craig):
         return ResultadoComando(True, "Craig no está instalado.", "")
-    return _ejecutar(["docker", "compose", "down"], cwd=dir_craig)
+    return _ejecutar(["docker", "compose", "stop"], cwd=dir_craig)
 
 
 def diagnostico(dir_craig: Path = DIR_CRAIG) -> dict[str, bool]:

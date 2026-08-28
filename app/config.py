@@ -7,6 +7,7 @@ razonable, de modo que la aplicación funcione sin que el usuario toque nada.
 from __future__ import annotations
 
 import configparser
+import re
 import textwrap
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -63,6 +64,10 @@ id_aplicacion = 1539028879342047263
 # Modos permitidos:
 {modos}
 modo = {modo_por_defecto}
+
+# Cómo avanza el trabajo:
+{ejecuciones}
+ejecucion = {ejecucion_por_defecto}
 
 # Carpeta ADICIONAL donde copiar los resúmenes.
 # Los resúmenes se guardan siempre en datos/resumenes/; si indicas una ruta
@@ -178,8 +183,22 @@ DESCRIPCION_MODOS = {
 MODOS = tuple(DESCRIPCION_MODOS)
 MODO_POR_DEFECTO = "rol"
 
+# Cómo avanza el trabajo de una grabación a su crónica.
+DESCRIPCION_EJECUCION = {
+    "automatico": (
+        "Al terminar una grabacion en Craig, la transcribe y la resume sin "
+        "intervención. Las grabaciones anteriores a abrir la app no se tocan."
+    ),
+    "manual": (
+        "No hace nada por su cuenta: cada paso se lanza desde la pestaña "
+        "Trabajo."
+    ),
+}
+EJECUCIONES = tuple(DESCRIPCION_EJECUCION)
+EJECUCION_POR_DEFECTO = "automatico"
 
-def _comentario_modos(ancho: int = 76) -> str:
+
+def _comentario_modos(descripciones: dict | None = None, ancho: int = 76) -> str:
     """Genera la lista de modos que se escribe como comentario en config.ini.
 
     Se construye a partir de DESCRIPCION_MODOS para que la lista del archivo
@@ -190,7 +209,7 @@ def _comentario_modos(ancho: int = 76) -> str:
     sangria = " " * (columna - 1)  # el '#' ocupa la primera posición
 
     lineas = []
-    for nombre, descripcion in DESCRIPCION_MODOS.items():
+    for nombre, descripcion in (descripciones or DESCRIPCION_MODOS).items():
         envuelto = textwrap.wrap(descripcion, width=ancho - columna)
         lineas.append(f"#   {nombre:<13} {envuelto[0]}")
         lineas.extend(f"#{sangria}{resto}" for resto in envuelto[1:])
@@ -203,6 +222,7 @@ class Config:
 
     carpeta_resumenes_extra: Path | None = None
     modo: str = MODO_POR_DEFECTO
+    ejecucion: str = EJECUCION_POR_DEFECTO
     idioma: str = "es"
     modelos: Modelos = field(default_factory=Modelos)
     jugadores: dict[str, str] = field(default_factory=dict)
@@ -223,8 +243,10 @@ class Config:
 def plantilla_config() -> str:
     """El contenido del config.ini por defecto, con los modos ya listados."""
     return CONFIG_EJEMPLO.format(
-        modos=_comentario_modos(),
+        modos=_comentario_modos(DESCRIPCION_MODOS),
         modo_por_defecto=MODO_POR_DEFECTO,
+        ejecuciones=_comentario_modos(DESCRIPCION_EJECUCION),
+        ejecucion_por_defecto=EJECUCION_POR_DEFECTO,
         contexto=CONTEXTO_POR_DEFECTO,
     )
 
@@ -277,6 +299,11 @@ def cargar(ruta: Path = RUTA_CONFIG) -> Config:
         modo = _texto(general, "modo", "").lower()
         cfg.modo = modo if modo in MODOS else MODO_POR_DEFECTO
 
+        ejecucion = _texto(general, "ejecucion", "").lower()
+        cfg.ejecucion = (
+            ejecucion if ejecucion in EJECUCIONES else EJECUCION_POR_DEFECTO
+        )
+
     if parser.has_section("modelos"):
         m = parser["modelos"]
         por_defecto = cfg.modelos
@@ -306,6 +333,124 @@ def cargar(ruta: Path = RUTA_CONFIG) -> Config:
         }
 
     return cfg
+
+
+_ASIGNACION = re.compile(r"^(\s*)([^#;=\s][^=]*?)(\s*=\s*)(.*)$")
+_SECCION = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+
+
+def _seccion_de(linea: str) -> str | None:
+    encontrada = _SECCION.match(linea)
+    return encontrada.group(1).strip().lower() if encontrada else None
+
+
+def guardar_valores(
+    cambios: dict[tuple[str, str], str], ruta: Path = RUTA_CONFIG
+) -> None:
+    """Escribe valores en config.ini **conservando comentarios y orden**.
+
+    `configparser` sabe leer el archivo pero al reescribirlo tira todos los
+    comentarios, que aquí son la documentación de cada opción. Por eso se
+    sustituye el valor línea a línea y se deja el resto intacto.
+
+    Las claves que no existan se añaden al final de su sección; las secciones
+    que falten, al final del archivo.
+    """
+    if not cambios:
+        return
+
+    pendientes = {(s.lower(), c.lower()): str(v) for (s, c), v in cambios.items()}
+    lineas = (
+        ruta.read_text(encoding="utf-8").splitlines() if ruta.exists() else []
+    )
+
+    resultado: list[str] = []
+    seccion = ""
+    for linea in lineas:
+        nombre = _seccion_de(linea)
+        if nombre is not None:
+            seccion = nombre
+            resultado.append(linea)
+            continue
+
+        asignacion = _ASIGNACION.match(linea)
+        if asignacion:
+            clave = asignacion.group(2).strip().lower()
+            valor = pendientes.pop((seccion, clave), None)
+            if valor is not None:
+                sangria, nombre_original, _, _ = asignacion.groups()
+                resultado.append(f"{sangria}{nombre_original.strip()} = {valor}")
+                continue
+        resultado.append(linea)
+
+    for (seccion_faltante, clave), valor in pendientes.items():
+        resultado = _insertar(resultado, seccion_faltante, f"{clave} = {valor}")
+
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_text(
+        "\n".join(resultado).rstrip("\n") + "\n",
+        encoding="utf-8",
+    )
+
+
+def _insertar(lineas: list[str], seccion: str, asignacion: str) -> list[str]:
+    """Mete una asignación al final de su sección, creándola si no existe."""
+    inicio = next(
+        (i for i, l in enumerate(lineas) if _seccion_de(l) == seccion), None
+    )
+    if inicio is None:
+        cola = lineas + ([""] if lineas and lineas[-1] else [])
+        return cola + [f"[{seccion}]", asignacion]
+
+    fin = next(
+        (
+            i
+            for i in range(inicio + 1, len(lineas))
+            if _seccion_de(lineas[i]) is not None
+        ),
+        len(lineas),
+    )
+    # Detrás del último contenido, no de las lineas en blanco que separan.
+    while fin > inicio + 1 and not lineas[fin - 1].strip():
+        fin -= 1
+    return lineas[:fin] + [asignacion] + lineas[fin:]
+
+
+def guardar_jugadores(mapa: dict[str, str], ruta: Path = RUTA_CONFIG) -> None:
+    """Reemplaza la sección [jugadores] conservando sus comentarios."""
+    lineas = (
+        ruta.read_text(encoding="utf-8").splitlines() if ruta.exists() else []
+    )
+    inicio = next(
+        (i for i, l in enumerate(lineas) if _seccion_de(l) == "jugadores"), None
+    )
+    nuevas = [f"{usuario} = {personaje}" for usuario, personaje in mapa.items()]
+
+    if inicio is None:
+        cuerpo = lineas + ([""] if lineas and lineas[-1] else [])
+        cuerpo += ["[jugadores]"] + nuevas
+    else:
+        fin = next(
+            (
+                i
+                for i in range(inicio + 1, len(lineas))
+                if _seccion_de(lineas[i]) is not None
+            ),
+            len(lineas),
+        )
+        # Se conservan los comentarios de la sección y se tiran las asignaciones.
+        comentarios = [
+            l for l in lineas[inicio + 1 : fin] if not _ASIGNACION.match(l)
+        ]
+        while comentarios and not comentarios[-1].strip():
+            comentarios.pop()
+        cuerpo = lineas[: inicio + 1] + comentarios + nuevas + lineas[fin:]
+
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_text(
+        "\n".join(cuerpo).rstrip("\n") + "\n",
+        encoding="utf-8",
+    )
 
 
 def asegurar_carpetas() -> None:
