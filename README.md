@@ -20,11 +20,15 @@ El resumen debe centrarse en la **acción dentro del rol** e ignorar la charla f
 
 1. Abres la aplicación → levanta Craig automáticamente.
 2. `/join` en Discord → Craig empieza a grabar.
-3. `/stop` en Discord → Craig termina la grabación.
+3. Botón «Stop» en el mensaje del bot → Craig termina la grabación.
 4. La aplicación detecta la grabación y procesa todo sola: transcribe, combina y resume.
 5. Cierras la aplicación → baja Craig.
 
-Comandos disponibles del bot: `join`, `stop`, `note`, `recordings`, `autorecord`, `info`, `features`, `server-settings`, `voice-test`, `webapp`, `bless`, `unbless`. (No hay `/leave`: para terminar se usa `/stop`.)
+**El bot tiene un solo comando: `/join`.** Para terminar se pulsa el botón «Stop» del mensaje que el propio bot publica en el canal.
+
+Craig trae doce comandos, casi todos de su servicio público: suscripciones (`bless`, `unbless`, `features`), panel web, ajustes de servidor, grabación automática... Aquí sobran, así que `instalar_craig.py` los borra del clon antes de construir la imagen y `install.sh` ejecuta `yarn run sync`, que es lo que los hace desaparecer del menú `/` de Discord.
+
+Quitar `/stop` no rompe nada: el botón no depende de ese comando. Lo atiende `handleRecordingInteraction` en `apps/bot/src/modules/slash.ts`, que llama directamente a `recording.stop()`. Para recuperar cualquier comando basta añadir su archivo a `COMANDOS_QUE_SE_QUEDAN` y reconstruir.
 
 Los pasos 2 y 3 se hacen en Discord y son necesariamente manuales (ver *Decisiones de diseño*). Todo lo demás es automático.
 

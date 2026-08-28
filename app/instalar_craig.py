@@ -169,13 +169,63 @@ def apuntar_redis_a_docker(destino: Path = DIR_CRAIG) -> list[Path]:
     return parcheados
 
 
-def imagen_desactualizada(destino: Path = DIR_CRAIG) -> bool | None:
-    """¿La imagen de Craig lleva dentro el arreglo de Redis?
+# Craig trae doce comandos, la mayoría de su servicio público (suscripciones,
+# panel web, ajustes de servidor). Aquí sólo se usa uno: `/join` para empezar a
+# grabar, y el botón «Stop» del mensaje que el propio bot publica para terminar.
+#
+# Ese botón NO depende del comando `/stop`: lo atiende `handleRecordingInteraction`
+# en apps/bot/src/modules/slash.ts, que llama directamente a `recording.stop()`.
+#
+# Los comandos se cargan por carpeta (`registerCommandsIn`), sin imports entre
+# ellos, así que borrar un archivo es suficiente. `install.sh` ejecuta después
+# `yarn run sync`, que es lo que hace desaparecer el comando de Discord.
+COMANDOS_QUE_SE_QUEDAN = ("join.ts",)
 
-    `/app` sale de la imagen, no del clon del host, así que parchear los
-    archivos de aquí no basta: mientras la imagen conserve `redis: {}`, cada
-    contenedor nuevo revive el fallo, porque `install.sh` regenera `default.js`
-    desde una plantilla sin parchear.
+DIR_COMANDOS = "apps/bot/src/commands"
+
+
+def simplificar_comandos(destino: Path = DIR_CRAIG) -> list[str]:
+    """Borra del clon los comandos que no se usan. Devuelve cuáles.
+
+    Es idempotente: si ya no están, no hace nada.
+    """
+    carpeta = destino / DIR_COMANDOS
+    if not carpeta.is_dir():
+        return []
+
+    borrados = []
+    for archivo in sorted(carpeta.glob("*.ts")):
+        if archivo.name in COMANDOS_QUE_SE_QUEDAN:
+            continue
+        try:
+            archivo.unlink()
+            borrados.append(archivo.stem)
+        except OSError:
+            continue
+    return borrados
+
+
+# Marcas que la sonda escribe: una por cada arreglo que le falte a la imagen,
+# más una final que demuestra que el comando llegó a ejecutarse.
+MARCA_PENDIENTE = "PENDIENTE"
+MARCA_FIN = "SONDA-OK"
+
+# Se comprueban dos cosas: que Redis esté parcheado y que los comandos de más
+# ya no estén. Ambas viven dentro de la imagen, no en el clon del host.
+SONDA = (
+    f'grep -q "{REDIS_VACIO}" {CONFIGS_A_PARCHEAR[0]} && echo {MARCA_PENDIENTE}; '
+    f"ls {DIR_COMANDOS}/*.ts 2>/dev/null "
+    f"| grep -qv '/{COMANDOS_QUE_SE_QUEDAN[0]}$' && echo {MARCA_PENDIENTE}; "
+    f"echo {MARCA_FIN}"
+)
+
+
+def imagen_desactualizada(destino: Path = DIR_CRAIG) -> bool | None:
+    """¿Le falta a la imagen alguno de los arreglos que se hacen en el clon?
+
+    `/app` sale de la imagen, no del clon del host, así que tocar los archivos
+    de aquí no basta: mientras la imagen conserve lo viejo, cada contenedor
+    nuevo lo revive.
 
     Devuelve None si no se pudo averiguar. **No se confunde con False**: dar por
     buena una imagen que no se ha podido mirar es como se cuela este fallo.
@@ -183,7 +233,7 @@ def imagen_desactualizada(destino: Path = DIR_CRAIG) -> bool | None:
     try:
         proceso = subprocess.run(
             ["docker", "compose", "run", "--rm", "--no-deps", "--entrypoint",
-             "grep", "craig", "-c", REDIS_VACIO, CONFIGS_A_PARCHEAR[0]],
+             "sh", "craig", "-c", SONDA],
             cwd=str(destino),
             capture_output=True,
             text=True,
@@ -193,13 +243,10 @@ def imagen_desactualizada(destino: Path = DIR_CRAIG) -> bool | None:
     except (subprocess.SubprocessError, OSError):
         return None
 
-    # `grep -c` escribe el número de coincidencias; cualquier otra cosa
-    # significa que falló el propio docker, no que la imagen esté bien.
-    salida = (proceso.stdout or "").strip().splitlines()
-    numeros = [l for l in salida if l.strip().isdigit()]
-    if not numeros:
-        return None
-    return int(numeros[-1]) > 0
+    salida = proceso.stdout or ""
+    if MARCA_FIN not in salida:
+        return None  # la sonda no llegó a ejecutarse
+    return MARCA_PENDIENTE in salida
 
 
 def reconstruir_imagen(destino: Path = DIR_CRAIG) -> bool:
@@ -320,16 +367,21 @@ def main(argv: list[str] | None = None) -> int:
     for ruta in parcheados:
         print(f"Ajustado Redis en {ruta.relative_to(DIR_CRAIG)}")
 
+    borrados = simplificar_comandos()
+    if borrados:
+        print(f"Comandos de Discord retirados: {', '.join(borrados)}")
+
+    cambiado_algo = bool(parcheados or borrados)
     obsoleta = imagen_desactualizada()
-    if obsoleta is None and not parcheados:
+    if obsoleta is None and not cambiado_algo:
         print(
             "AVISO: no se pudo comprobar si la imagen de Craig lleva el arreglo "
             "de Redis. Si el bot no conecta, reconstrúyela con:\n"
             "  docker compose build craig",
             file=sys.stderr,
         )
-    elif parcheados or obsoleta:
-        print("La imagen de Craig no incluye el arreglo de Redis; reconstruyendo...")
+    elif cambiado_algo or obsoleta:
+        print("La imagen de Craig no está al día; reconstruyendo...")
         if reconstruir_imagen():
             print("Imagen reconstruida.")
         else:
