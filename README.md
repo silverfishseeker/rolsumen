@@ -38,8 +38,9 @@ python -m app.instalar_craig
 #    (el identificador de la aplicación ya viene puesto)
 
 # 3. Crear el acceso directo (una vez) y abrir con doble clic
-python -m app.acceso_directo            # deja Rolsumen.lnk en esta carpeta
-python -m app.acceso_directo --escritorio   # y otro en el escritorio
+python -m app.acceso_directo                 # deja Rolsumen.lnk en esta carpeta
+python -m app.acceso_directo --escritorio    # y otro en el escritorio
+python -m app.acceso_directo --menu-inicio   # y en el menú Inicio
 ```
 
 También se puede abrir sin él: `python -m app.main`.
@@ -57,11 +58,33 @@ La aplicación las copia sola al `install.config` interno de Craig antes de arra
 
 Al hacerlo, se aplican también los ajustes que Craig necesita para funcionar dentro de Docker: su `install.config.example` apunta la base de datos a `localhost:5432`, que **no funciona** dentro de un contenedor, y debe ser `db:5432` (el nombre del servicio en `docker-compose.yml`). Lo mismo con Redis.
 
+## Una sola ventana
+
+Abrir la aplicación por segunda vez no arranca otra: trae al frente la que ya está. Dos instancias sobre los mismos datos se pisarían —las dos levantarían Craig, las dos vigilarían grabaciones nuevas y podrían transcribir la misma sesión a la vez, que es justo lo que la cola evita dentro de una—.
+
+Enfocar la ventana pide un rodeo, porque Windows no deja que un proceso le robe el primer plano a otro, **ni siquiera recién lanzado desde el Explorador** (comprobado). Así que el que enfoca no es el que llega, sino el que ya estaba: la instancia nueva concede permiso al proceso de la primera con `AllowSetForegroundWindow` y le avisa por un evento con nombre; la primera lo ve en su bucle de eventos y se trae a sí misma al frente. Si eso falla, la pone delante sin robar el teclado, y como último recurso avisa con un mensaje.
+
+## Configuración
+
+Los cambios no se aplican hasta pulsar **Guardar**, que está desactivado mientras no haya nada que guardar; en cuanto se toca un campo aparece «Cambios sin guardar». **Valores predeterminados** rellena General y Modelos con los de fábrica, pero **no toca Discord ni Jugadores** —son datos del usuario, no ajustes— y tampoco guarda: deja los valores puestos para revisarlos, como cualquier otro cambio.
+
+El pie con esos botones va fuera del área con desplazamiento: Guardar tiene que verse siempre, no al final de una lista larga que haya que bajar.
+
 ## El acceso directo
 
 `Rolsumen.lnk` apunta a `pythonw.exe`, el intérprete sin consola, así que abre la ventana sin dejar detrás un terminal negro. Lleva el icono de la aplicación y no se sube al repositorio, porque guarda rutas absolutas de la máquina donde se creó: se regenera con `python -m app.acceso_directo`.
 
 El icono (`app/recursos/rolsumen.ico`) es un d20, y se dibuja por separado para cada tamaño que pide Windows: a 16 px, que es el de la barra de tareas, un trazo del 2% se queda en un tercio de píxel y el dado se convierte en una mancha dorada, así que los tamaños pequeños llevan el trazo más grueso. Se regenera con `python -m app.recursos.generar_icono`.
+
+### Para poder anclarlo a Inicio
+
+Windows 11 ancla desde su lista de aplicaciones, y ahí sólo salen los accesos directos que viven en `%APPDATA%\Microsoft\Windows\Start Menu\Programs`. Un `.lnk` suelto en la carpeta del proyecto no cuenta como aplicación instalada, y por eso anclarlo no funciona bien. Con `--menu-inicio` se instala también ahí; a partir de entonces `Get-StartApps` lo lista como *Rolsumen* y se puede anclar con normalidad.
+
+(Anclar a la **barra de tareas** ya no se puede automatizar: Windows 11 quitó ese verbo del shell. Hay que hacerlo a mano desde el menú contextual.)
+
+### Prestar las dependencias sin heredar el entorno
+
+El Python de Microsoft Store exporta `PYTHONUSERBASE` apuntando a sus propios paquetes, y **los procesos hijos lo heredan**. Comprobar si otro intérprete tiene las dependencias lanzándolo como subproceso daba entonces un falso positivo: veía los paquetes del primero. El acceso directo se creaba sin `--paquetes` y, al abrirlo con doble clic —sin esa variable—, la aplicación se quedaba sin `torch`, es decir, **sin GPU**. La sonda se ejecuta ahora con el entorno limpio de variables `PYTHON*`, que es lo que la aplicación tendrá de verdad.
 
 ### El icono de la barra de tareas y el Python de Microsoft Store
 
@@ -77,7 +100,7 @@ Ese Python normal, además, no viene marcado como consciente del DPI. Sin arregl
 
 Tres pestañas y una barra inferior siempre visible.
 
-**Trabajo** — las tres listas de lo que hay: grabaciones en Craig, transcripciones guardadas y crónicas generadas. Se selecciona una fila de cualquiera de ellas y el botón grande cambia según lo que toque: *Transcribir*, *Resumir* o *Abrir* (esta última abre la crónica con el editor de texto del sistema). Cada fila indica en qué estado está.
+**Trabajo** — las tres listas de lo que hay: grabaciones en Craig, transcripciones guardadas y crónicas generadas. Abajo, *Actualizar listas* y *Abrir carpeta de datos*, que abre `datos/` en el explorador de archivos. Se selecciona una fila de cualquiera de ellas y el botón grande cambia según lo que toque: *Transcribir*, *Resumir* o *Abrir* (esta última abre la crónica con el editor de texto del sistema). Cada fila indica en qué estado está.
 
 **Estado** — los servicios (Docker, Craig, Ollama, ffmpeg, GPU) y el registro de actividad.
 

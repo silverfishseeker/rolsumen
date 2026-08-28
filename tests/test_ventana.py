@@ -212,3 +212,121 @@ def test_el_escalado_de_fuentes_acompana(raiz, monkeypatch):
     gui._ajustar_escalado(raiz)
 
     assert float(raiz.tk.call("tk", "scaling")) == pytest.approx(144 / 72.0, rel=0.01)
+
+
+# --- Configuración: cambios pendientes ---------------------------------------
+
+
+def test_al_abrir_no_hay_cambios_pendientes(ventana):
+    assert str(ventana.boton_guardar["state"]) == "disabled"
+    assert ventana.aviso_config["text"] == ""
+
+
+def test_tocar_un_campo_habilita_guardar(ventana):
+    ventana.campos[("general", "idioma")].set("en")
+
+    assert str(ventana.boton_guardar["state"]) == "normal"
+    assert "sin guardar" in ventana.aviso_config["text"].lower()
+
+
+def test_deshacer_el_cambio_a_mano_vuelve_a_desactivar(ventana):
+    original = ventana.campos[("general", "idioma")].get()
+    ventana.campos[("general", "idioma")].set("en")
+    ventana.campos[("general", "idioma")].set(original)
+
+    assert str(ventana.boton_guardar["state"]) == "disabled"
+
+
+def test_editar_los_jugadores_tambien_cuenta(ventana):
+    ventana.jugadores.insert(tk.END, "\nana = Elara")
+    ventana._jugadores_editados()
+
+    assert str(ventana.boton_guardar["state"]) == "normal"
+
+
+def test_los_predeterminados_no_tocan_discord_ni_jugadores(ventana):
+    token = ventana.campos[("discord", "token_bot")].get()
+    jugadores = ventana.jugadores.get("1.0", tk.END)
+
+    ventana._poner_predeterminados()
+
+    assert ventana.campos[("discord", "token_bot")].get() == token
+    assert ventana.jugadores.get("1.0", tk.END) == jugadores
+
+
+def test_los_predeterminados_rellenan_general_y_modelos(ventana):
+    ventana.campos[("general", "idioma")].set("xx")
+    ventana.campos[("modelos", "contexto_resumen")].set("111")
+
+    ventana._poner_predeterminados()
+
+    por_defecto = gui.Ventana._valores_de(gui.cfg.Config())
+    assert ventana.campos[("general", "idioma")].get() == por_defecto[
+        ("general", "idioma")
+    ]
+    assert ventana.campos[("modelos", "contexto_resumen")].get() == str(
+        gui.cfg.CONTEXTO_POR_DEFECTO
+    )
+
+
+def test_los_predeterminados_no_guardan_solos(ventana):
+    """Se dejan puestos para revisarlos; confirmarlos es cosa de Guardar."""
+    ventana.campos[("general", "idioma")].set("xx")
+
+    ventana._poner_predeterminados()
+
+    assert str(ventana.boton_guardar["state"]) == "normal", (
+        "restaurar deja cambios pendientes, no los aplica"
+    )
+
+
+def test_restaurar_sin_nada_que_cambiar_lo_dice(ventana, monkeypatch):
+    # Con la configuración ya en valores de fábrica no hay nada que tocar.
+    por_defecto = gui.Ventana._valores_de(gui.cfg.Config())
+    for clave, valor in por_defecto.items():
+        if clave[0] in gui.Ventana.SECCIONES_RESTAURABLES:
+            ventana.campos[clave].set(valor)
+    ventana._anotar_lo_guardado()
+    ventana._revisar_cambios()
+
+    ventana._poner_predeterminados()
+
+    assert "predeterminados" in ventana.aviso_config["text"].lower()
+    assert str(ventana.boton_guardar["state"]) == "disabled"
+
+
+# --- Botón de la carpeta de datos --------------------------------------------
+
+
+def test_abrir_la_carpeta_de_datos_usa_el_explorador(ventana, monkeypatch):
+    abiertas = []
+    monkeypatch.setattr(gui, "_abrir_con_el_sistema", abiertas.append)
+
+    ventana._abrir_datos()
+
+    assert abiertas == [gui.cfg.DIR_DATOS]
+
+
+def test_la_carpeta_se_crea_si_no_existe(ventana, monkeypatch):
+    """Recién instalado puede no existir todavía; abrir una carpeta que falta
+    da un error del sistema en vez de una ventana."""
+    creadas = []
+    monkeypatch.setattr(gui.cfg, "asegurar_carpetas", lambda: creadas.append(True))
+    monkeypatch.setattr(gui, "_abrir_con_el_sistema", lambda _r: None)
+
+    ventana._abrir_datos()
+
+    assert creadas == [True]
+
+
+def test_si_no_se_puede_abrir_se_dice_en_el_registro(ventana, monkeypatch):
+    def explota(_ruta):
+        raise OSError("sin explorador")
+
+    monkeypatch.setattr(gui, "_abrir_con_el_sistema", explota)
+    escritos = []
+    monkeypatch.setattr(ventana, "_escribir", escritos.append)
+
+    ventana._abrir_datos()
+
+    assert escritos and "sin explorador" in escritos[0]

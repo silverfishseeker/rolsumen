@@ -22,6 +22,7 @@ dependencias, se le prestan las del intérprete actual pasándole la ruta con
 from __future__ import annotations
 
 import argparse
+import os
 import site
 import subprocess
 import sys
@@ -77,12 +78,25 @@ def candidatos() -> list[Path]:
     return encontrados
 
 
+def _entorno_limpio() -> dict[str, str]:
+    """El entorno que tendrá la aplicación al abrirse desde el Explorador.
+
+    El Python de Microsoft Store exporta `PYTHONUSERBASE` apuntando a sus
+    propios paquetes, y los procesos hijos lo heredan. Sondear con esa variable
+    puesta da un falso positivo: el intérprete parece tener las dependencias
+    porque ve las del otro, pero al abrir la aplicación con doble clic no las
+    encuentra y se queda sin torch, es decir, sin GPU.
+    """
+    return {c: v for c, v in os.environ.items() if not c.startswith("PYTHON")}
+
+
 def _tiene_las_dependencias(interprete: Path) -> bool:
     try:
         proceso = subprocess.run(
             [str(interprete), "-c", f"import {MODULO_TESTIGO}"],
             capture_output=True,
             timeout=180,
+            env=_entorno_limpio(),
             **SIN_CONSOLA,
         )
         return proceso.returncode == 0
@@ -155,6 +169,23 @@ def escritorio() -> Path:
     return Path.home() / "Desktop"
 
 
+def menu_inicio() -> Path:
+    """Carpeta de programas del menú Inicio del usuario.
+
+    Windows 11 ancla a Inicio desde su lista de aplicaciones, y ahí sólo salen
+    los accesos directos que viven en esta carpeta. Un `.lnk` suelto en una
+    carpeta cualquiera no cuenta como aplicación instalada, y por eso anclarlo
+    no funciona bien.
+    """
+    return (
+        Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        / "Microsoft"
+        / "Windows"
+        / "Start Menu"
+        / "Programs"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="acceso_directo",
@@ -164,6 +195,14 @@ def main(argv: list[str] | None = None) -> int:
         "--escritorio",
         action="store_true",
         help="crea también una copia en el escritorio",
+    )
+    parser.add_argument(
+        "--menu-inicio",
+        action="store_true",
+        help=(
+            "crea también una copia en el menú Inicio; hace falta para poder "
+            "anclarla a Inicio o a la barra de tareas"
+        ),
     )
     argumentos = parser.parse_args(argv)
 
@@ -189,10 +228,14 @@ def main(argv: list[str] | None = None) -> int:
         if prestados := paquetes_prestados(interprete):
             print(f"Paquetes prestados de: {prestados}")
         print(f"Creado {crear()}")
-        if argumentos.escritorio:
-            carpeta = escritorio()
+        for pedido, carpeta, donde in (
+            (argumentos.escritorio, escritorio(), "el escritorio"),
+            (argumentos.menu_inicio, menu_inicio(), "el menú Inicio"),
+        ):
+            if not pedido:
+                continue
             if not carpeta.is_dir():
-                print(f"No se encontró el escritorio en {carpeta}.", file=sys.stderr)
+                print(f"No se encontró {donde} en {carpeta}.", file=sys.stderr)
                 return 1
             print(f"Creado {crear(carpeta / NOMBRE)}")
     except RuntimeError as exc:

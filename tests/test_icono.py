@@ -136,3 +136,54 @@ def test_fuera_de_windows_se_explica_la_alternativa(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="python -m app.main"):
         acceso_directo.crear(tmp_path / "x.lnk")
+
+
+# --- Sondeo de dependencias y menú Inicio ------------------------------------
+
+
+def test_la_sonda_no_hereda_las_variables_de_python(monkeypatch):
+    """El Python de Microsoft Store exporta PYTHONUSERBASE.
+
+    Los hijos lo heredan y ven sus paquetes, así que sondear con esa variable
+    puesta decía que el otro intérprete tenía las dependencias cuando no las
+    tenía. Al abrir la aplicación con doble clic se quedaba sin torch, es decir,
+    sin GPU.
+    """
+    monkeypatch.setenv("PYTHONUSERBASE", "C:/de-la-store")
+    monkeypatch.setenv("PYTHONPATH", "C:/otra")
+    monkeypatch.setenv("PATH", "C:/windows")
+
+    limpio = acceso_directo._entorno_limpio()
+
+    assert not [c for c in limpio if c.startswith("PYTHON")]
+    assert limpio.get("PATH") == "C:/windows", "el resto del entorno se conserva"
+
+
+def test_la_sonda_se_ejecuta_con_el_entorno_limpio(monkeypatch, tmp_path):
+    recibido = {}
+
+    def falso_run(argumentos, **kwargs):
+        recibido.update(kwargs)
+
+        class Falso:
+            returncode = 0
+
+        return Falso()
+
+    monkeypatch.setattr(acceso_directo.subprocess, "run", falso_run)
+    acceso_directo._tiene_las_dependencias(tmp_path / "pythonw.exe")
+
+    assert "env" in recibido, "sin env explícito hereda el del padre"
+    assert not [c for c in recibido["env"] if c.startswith("PYTHON")]
+
+
+def test_el_menu_inicio_apunta_a_la_carpeta_de_programas(monkeypatch, tmp_path):
+    """Sólo lo que vive ahí sale en la lista de aplicaciones de Windows.
+
+    Y sólo desde esa lista se puede anclar a Inicio de forma fiable.
+    """
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+
+    ruta = acceso_directo.menu_inicio()
+
+    assert ruta == tmp_path / "Microsoft" / "Windows" / "Start Menu" / "Programs"

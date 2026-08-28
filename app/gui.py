@@ -25,7 +25,7 @@ from datetime import datetime
 from tkinter import scrolledtext, ttk
 
 from . import config as cfg
-from . import dependencias, docker_manager
+from . import dependencias, docker_manager, instancia
 from .pipeline import cola as modulo_cola
 from .pipeline import orquestador, resumidor
 from .craig_client import ErrorCraig
@@ -39,6 +39,8 @@ ANCHO_MINIMO, ALTO_MINIMO = 660, 500
 INTERVALO_BUSQUEDA_MS = 60_000
 INTERVALO_COLA_MS = 100
 INTERVALO_ESTADO_MS = 10_000
+# Cada cuánto se mira si otra instancia pide que nos pongamos delante.
+INTERVALO_INSTANCIA_MS = 400
 
 OK = "#2e7d32"
 MAL = "#c62828"
@@ -195,6 +197,23 @@ def _ajustar_escalado(raiz: tk.Tk) -> None:
     raiz.minsize(ancho_minimo, alto_minimo)
 
 
+def ventana_del_sistema(raiz: tk.Tk) -> int:
+    """HWND de nivel superior: el que conocen la barra de tareas y el foco.
+
+    `winfo_id()` devuelve la ventana interna de Tk; la que cuenta es su padre.
+    """
+    if sys.platform != "win32":
+        return 0
+    try:
+        import ctypes
+
+        raiz.update_idletasks()
+        interna = raiz.winfo_id()
+        return ctypes.windll.user32.GetParent(interna) or interna
+    except (AttributeError, OSError, tk.TclError):
+        return 0
+
+
 def _aplicar_icono(raiz: tk.Tk) -> None:
     """Pone el icono en la ventana y en la barra de tareas.
 
@@ -213,10 +232,8 @@ def _aplicar_icono(raiz: tk.Tk) -> None:
     try:
         import ctypes
 
-        raiz.update_idletasks()  # hasta que no existe de verdad no hay ventana
         usuario = ctypes.windll.user32
-        # winfo_id() da la ventana interna; la de la barra de tareas es su padre.
-        ventana = usuario.GetParent(raiz.winfo_id()) or raiz.winfo_id()
+        ventana = ventana_del_sistema(raiz)
 
         IMAGE_ICON, LR_LOADFROMFILE = 1, 0x10
         WM_SETICON, ICON_SMALL, ICON_BIG = 0x0080, 0, 1
@@ -289,6 +306,7 @@ class Ventana:
         self.raiz.after(INTERVALO_COLA_MS, self._vaciar_mensajes)
         self.raiz.after(INTERVALO_ESTADO_MS, self._refrescar_estado)
         self.raiz.after(INTERVALO_BUSQUEDA_MS, self._busqueda_periodica)
+        self.raiz.after(INTERVALO_INSTANCIA_MS, self._atender_a_otra_instancia)
         self._arrancar()
 
     # ------------------------------------------------------------------ UI --
@@ -348,10 +366,23 @@ class Ventana:
         )
         self.boton_paso.pack(fill=tk.X, ipady=8)
 
-        ttk.Button(acciones, text="Actualizar listas", command=self._refrescar_listas).pack(
-            pady=(6, 0)
-        )
+        botones = ttk.Frame(acciones)
+        botones.pack(pady=(6, 0))
+        ttk.Button(
+            botones, text="Actualizar listas", command=self._refrescar_listas
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            botones, text="Abrir carpeta de datos", command=self._abrir_datos
+        ).pack(side=tk.LEFT, padx=(6, 0))
         return marco
+
+    def _abrir_datos(self) -> None:
+        """Abre `datos/` en el explorador de archivos del sistema."""
+        cfg.asegurar_carpetas()
+        try:
+            _abrir_con_el_sistema(cfg.DIR_DATOS)
+        except OSError as exc:
+            self._escribir(f"No se pudo abrir {cfg.DIR_DATOS}: {exc}")
 
     def _pestana_estado(self) -> ttk.Frame:
         marco = ttk.Frame(self.pestanas, padding=10)
@@ -475,11 +506,27 @@ class Ventana:
             ),
         )
 
-        pie = ttk.Frame(marco)
-        pie.pack(fill=tk.X, pady=(10, 0))
-        ttk.Button(pie, text="Guardar", command=self._guardar_config).pack(side=tk.LEFT)
+        # El pie va fuera del área con desplazamiento: Guardar tiene que verse
+        # siempre, no al final de una lista larga que hay que bajar.
+        pie = ttk.Frame(contenedor, padding=(10, 8))
+        pie.pack(side=tk.BOTTOM, fill=tk.X, before=lienzo)
+        self.boton_guardar = ttk.Button(
+            pie, text="Guardar", state=tk.DISABLED, command=self._guardar_config
+        )
+        self.boton_guardar.pack(side=tk.LEFT)
+        ttk.Button(
+            pie, text="Valores predeterminados", command=self._poner_predeterminados
+        ).pack(side=tk.LEFT, padx=6)
         self.aviso_config = ttk.Label(pie, text="", foreground=NEUTRO)
         self.aviso_config.pack(side=tk.LEFT, padx=8)
+
+        # Lo guardado es la referencia contra la que se detectan los cambios.
+        self._anotar_lo_guardado()
+        for variable in self.campos.values():
+            variable.trace_add("write", lambda *_: self._revisar_cambios())
+        self.jugadores.bind("<<Modified>>", self._jugadores_editados)
+        self.jugadores.edit_modified(False)
+
         return contenedor
 
     def _entrada(self, padre, clave, etiqueta, valor, oculto: bool = False) -> None:
@@ -547,6 +594,21 @@ class Ventana:
         if self.configuracion.ejecucion == "automatico" and not self.cola.ocupada:
             self._en_hilo(self._buscar_nuevas)
         self.raiz.after(INTERVALO_BUSQUEDA_MS, self._busqueda_periodica)
+
+    def _atender_a_otra_instancia(self) -> None:
+        """Si alguien intentó abrir la aplicación otra vez, nos mostramos.
+
+        Lo hace la instancia que ya estaba: Windows no deja que sea la nueva
+        quien tome el primer plano, pero sí nosotros con su permiso.
+        """
+        if instancia.hay_peticion_de_frente():
+            self.raiz.deiconify()
+            self.raiz.lift()
+            ventana = ventana_del_sistema(self.raiz)
+            if not instancia.ponerse_al_frente(ventana):
+                # Tomar el foco puede denegarse; ponerse delante, no.
+                instancia.empujar(ventana)
+        self.raiz.after(INTERVALO_INSTANCIA_MS, self._atender_a_otra_instancia)
 
     def _refrescar_estado(self) -> None:
         if not self._comprobando.is_set():
@@ -820,6 +882,59 @@ class Ventana:
 
     # ------------------------------------------------------- configuración --
 
+    # Los valores predeterminados sólo tocan estas secciones: las credenciales
+    # de Discord y el reparto de personajes son datos del usuario, no ajustes.
+    SECCIONES_RESTAURABLES = ("general", "modelos")
+
+    def _texto_jugadores(self) -> str:
+        return self.jugadores.get("1.0", tk.END).strip()
+
+    def _anotar_lo_guardado(self) -> None:
+        """Fija la referencia contra la que se comparan los cambios."""
+        self._guardado = {c: v.get() for c, v in self.campos.items()}
+        self._guardado_jugadores = self._texto_jugadores()
+
+    def _jugadores_editados(self, _evento=None) -> None:
+        # El aviso de Tk sólo se emite una vez hasta que se rearma.
+        self.jugadores.edit_modified(False)
+        self._revisar_cambios()
+
+    def _hay_cambios(self) -> bool:
+        if self._texto_jugadores() != self._guardado_jugadores:
+            return True
+        return any(v.get() != self._guardado.get(c) for c, v in self.campos.items())
+
+    def _revisar_cambios(self) -> None:
+        """Habilita Guardar sólo cuando hay algo que guardar."""
+        if self._hay_cambios():
+            self.boton_guardar.config(state=tk.NORMAL)
+            self.aviso_config.config(text="Cambios sin guardar", foreground=ESPERA)
+        else:
+            self.boton_guardar.config(state=tk.DISABLED)
+            self.aviso_config.config(text="")
+
+    def _poner_predeterminados(self) -> None:
+        """Rellena General y Modelos con los valores de fábrica.
+
+        No guarda: deja los campos puestos para que se revisen y se confirme
+        con Guardar, como cualquier otro cambio.
+        """
+        predeterminados = self._valores_de(cfg.Config())
+        cambiados = 0
+        for clave, valor in predeterminados.items():
+            if clave[0] not in self.SECCIONES_RESTAURABLES:
+                continue
+            if self.campos[clave].get() != valor:
+                self.campos[clave].set(valor)
+                cambiados += 1
+
+        if cambiados:
+            self._revisar_cambios()
+        else:
+            self.aviso_config.config(
+                text="Ya estaban los valores predeterminados", foreground=NEUTRO
+            )
+
     def _guardar_config(self) -> None:
         valores = {clave: variable.get().strip() for clave, variable in self.campos.items()}
 
@@ -848,6 +963,10 @@ class Ventana:
             if self.campos[clave].get() != valor
         ]
 
+        # A partir de aquí, lo que hay en pantalla es lo guardado.
+        self._anotar_lo_guardado()
+        self.boton_guardar.config(state=tk.DISABLED)
+
         if corregidos:
             nombres = ", ".join(c for _, c in corregidos)
             self.aviso_config.config(
@@ -863,7 +982,10 @@ class Ventana:
 
     def _valores_actuales(self) -> dict[tuple[str, str], str]:
         """Lo que hay que mostrar en cada casilla, según la configuración viva."""
-        c = self.configuracion
+        return self._valores_de(self.configuracion)
+
+    @staticmethod
+    def _valores_de(c: cfg.Config) -> dict[tuple[str, str], str]:
         m = c.modelos
         d = c.discord
         return {
@@ -950,6 +1072,13 @@ class Ventana:
 
 
 def lanzar() -> None:
+    # Dos ventanas sobre los mismos datos se pisarían: las dos levantarían
+    # Craig y podrían transcribir la misma sesión a la vez.
+    if not instancia.reservar():
+        if not instancia.traer_al_frente():
+            instancia.avisar_de_que_ya_esta_abierta()
+        return
+
     # Antes que nada: si no, la barra de tareas se queda con el icono de Python.
     _identificar_aplicacion()
     _hacerse_consciente_del_dpi()
