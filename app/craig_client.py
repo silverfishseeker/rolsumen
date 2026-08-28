@@ -25,6 +25,10 @@ TIMEOUT_COCINADO = 3600  # cocinar una sesión larga tarda
 
 NO_SON_PISTAS = {"info.txt", "raw.dat"}
 
+# Una cabecera FLAC vacía ocupa ~65 bytes. Por debajo de esto la pista no
+# contiene audio, aunque el ZIP parezca correcto.
+MINIMO_PISTA_BYTES = 1024
+
 
 class ErrorCraig(RuntimeError):
     """Fallo al hablar con Craig o con su base de datos."""
@@ -184,7 +188,12 @@ def cocinar(
     Equivale a pulsar "Multi-pista → FLAC" en su web de descarga.
     """
     destino_zip.parent.mkdir(parents=True, exist_ok=True)
-    asegurar_atd(dir_craig)
+
+    if not asegurar_atd(dir_craig):
+        raise ErrorCraig(
+            "No se pudo arrancar el planificador `atd` dentro de Craig. Sin él, "
+            "`cook.sh` aborta y devuelve un ZIP vacío con código de éxito."
+        )
 
     try:
         with destino_zip.open("wb") as salida:
@@ -213,7 +222,37 @@ def cocinar(
             f"El procesado de {id_grabacion} no produjo audio. ¿Se grabó algo?"
         )
 
+    _comprobar_pistas(destino_zip, id_grabacion)
     return destino_zip
+
+
+def _comprobar_pistas(ruta_zip: Path, id_grabacion: str) -> None:
+    """Rechaza un ZIP con pistas vacías.
+
+    `cook.sh` **devuelve código 0 aunque falle**: si le faltan sus binarios
+    (recién recreado el contenedor, con `install.sh` todavía a medias) escribe
+    un ZIP bien formado cuyas pistas son solo la cabecera. Sin esta comprobación
+    el pipeline lo transcribe como si nada y guarda el resultado vacío.
+    """
+    try:
+        with zipfile.ZipFile(ruta_zip) as zf:
+            pistas = [
+                i for i in zf.infolist()
+                if Path(i.filename).name not in NO_SON_PISTAS
+                and not i.filename.endswith("/")
+            ]
+    except zipfile.BadZipFile as exc:
+        ruta_zip.unlink(missing_ok=True)
+        raise ErrorCraig(
+            f"El procesado de {id_grabacion} no produjo un ZIP válido."
+        ) from exc
+
+    if not pistas or all(i.file_size < MINIMO_PISTA_BYTES for i in pistas):
+        ruta_zip.unlink(missing_ok=True)
+        raise ErrorCraig(
+            f"El procesado de {id_grabacion} produjo pistas vacías. Craig suele "
+            "estar aún instalándose: espera a que termine y vuelve a intentarlo."
+        )
 
 
 def extraer_pistas(ruta_zip: Path, destino: Path) -> list[Path]:

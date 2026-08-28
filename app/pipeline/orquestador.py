@@ -180,9 +180,13 @@ def procesar_grabacion(
                 avisar(f"Transcribiendo pista {numero} de {len(pistas_audio)}...")
                 segmentos = transcriptor.transcribir(pista, avisar=avisar)
                 pistas.append(segmentos)
-                guardar_transcripcion(
+                if not guardar_transcripcion(
                     segmentos, cfg.DIR_TRANSCRIPCIONES / etiqueta / f"{pista.stem}.json"
-                )
+                ):
+                    avisar(
+                        f"Aviso: la pista {numero} no produjo texto; se conserva "
+                        "la transcripción anterior."
+                    )
 
         ruta = _combinar_y_resumir(pistas, etiqueta, configuracion, avisar)
         return ResultadoProceso(grabacion.id, ok=True, resumen=ruta)

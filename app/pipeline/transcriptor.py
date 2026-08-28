@@ -249,13 +249,24 @@ class Transcriptor:
         return filtrar_segmentos(crudos, duracion_audio(ruta), hablante)
 
 
-def guardar_transcripcion(segmentos: list[Segmento], destino: Path) -> None:
+def guardar_transcripcion(segmentos: list[Segmento], destino: Path) -> bool:
+    """Guarda la transcripción de una pista. Devuelve False si no escribió nada.
+
+    Una pista sin segmentos nunca sobrescribe un archivo que ya existe: si la
+    transcripción anterior tenía contenido, lo más probable es que el fallo esté
+    en esta pasada (audio mal extraído, por ejemplo) y no en la anterior. Pisarla
+    convertiría un fallo recuperable en pérdida de datos.
+    """
+    if not segmentos and destino.exists():
+        return False
+
     destino.parent.mkdir(parents=True, exist_ok=True)
     datos = [
         {"inicio": s.inicio, "fin": s.fin, "texto": s.texto, "hablante": s.hablante}
         for s in segmentos
     ]
     destino.write_text(json.dumps(datos, ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
 
 
 def cargar_transcripcion(origen: Path) -> list[Segmento]:

@@ -6,6 +6,8 @@ imagen de Craig no lo arranca—, `at` falla, el script aborta y el ZIP sale
 **vacío**, sin ningún mensaje que explique la causa.
 """
 
+import io
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,19 @@ class ProcesoFalso:
         self.stderr = stderr
 
 
+def zip_con_pistas(*tamanos: int) -> bytes:
+    """ZIP como el que devuelve `cook.sh`, con una pista de cada tamaño."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        for numero, tamano in enumerate(tamanos, start=1):
+            zf.writestr(f"{numero}.flac", b"f" * tamano)
+        zf.writestr("info.txt", b"")
+    return buffer.getvalue()
+
+
+PISTA_REAL = 50_000
+
+
 def test_se_asegura_atd_antes_de_cocinar(tmp_path, monkeypatch):
     llamadas = []
 
@@ -28,8 +43,8 @@ def test_se_asegura_atd_antes_de_cocinar(tmp_path, monkeypatch):
     )
 
     def falso_run(argumentos, **kwargs):
-        # Simula un cook que escribe algo en el archivo de salida.
-        kwargs["stdout"].write(b"contenido")
+        # Simula un cook correcto: un ZIP con una pista de verdad.
+        kwargs["stdout"].write(zip_con_pistas(PISTA_REAL))
         return ProcesoFalso()
 
     monkeypatch.setattr(craig_client.subprocess, "run", falso_run)
@@ -79,7 +94,7 @@ def test_cocinar_crea_la_carpeta_de_destino(tmp_path, monkeypatch):
     monkeypatch.setattr(craig_client, "asegurar_atd", lambda *a, **k: True)
 
     def falso_run(argumentos, **kwargs):
-        kwargs["stdout"].write(b"x" * 100)
+        kwargs["stdout"].write(zip_con_pistas(PISTA_REAL))
         return ProcesoFalso()
 
     monkeypatch.setattr(craig_client.subprocess, "run", falso_run)
@@ -98,3 +113,64 @@ def test_asegurar_atd_no_revienta_sin_docker(monkeypatch):
 
     # Debe devolver False, no lanzar: el error real lo dará el cook después.
     assert craig_client.asegurar_atd(Path(".")) is False
+
+
+# --- El cook que falla devolviendo código 0 -----------------------------------
+
+
+def test_un_zip_con_pistas_vacias_se_detecta(tmp_path, monkeypatch):
+    # Con el contenedor recién recreado, `install.sh` aún no ha compilado los
+    # binarios del cook: este escribe un ZIP correcto cuyas pistas son solo la
+    # cabecera FLAC (~65 bytes) y **devuelve código 0**.
+    monkeypatch.setattr(craig_client, "asegurar_atd", lambda *a, **k: True)
+
+    def falso_run(argumentos, **kwargs):
+        kwargs["stdout"].write(zip_con_pistas(65))
+        return ProcesoFalso()
+
+    monkeypatch.setattr(craig_client.subprocess, "run", falso_run)
+
+    with pytest.raises(ErrorCraig, match="pistas vac"):
+        cocinar("abc", tmp_path / "salida.zip")
+
+
+def test_un_zip_con_pistas_vacias_no_se_deja_en_disco(tmp_path, monkeypatch):
+    monkeypatch.setattr(craig_client, "asegurar_atd", lambda *a, **k: True)
+
+    def falso_run(argumentos, **kwargs):
+        kwargs["stdout"].write(zip_con_pistas(65))
+        return ProcesoFalso()
+
+    monkeypatch.setattr(craig_client.subprocess, "run", falso_run)
+
+    destino = tmp_path / "salida.zip"
+    with pytest.raises(ErrorCraig):
+        cocinar("abc", destino)
+
+    assert not destino.exists()
+
+
+def test_basta_una_pista_con_audio(tmp_path, monkeypatch):
+    # Que un participante no dijera nada no invalida la grabación entera.
+    monkeypatch.setattr(craig_client, "asegurar_atd", lambda *a, **k: True)
+
+    def falso_run(argumentos, **kwargs):
+        kwargs["stdout"].write(zip_con_pistas(65, PISTA_REAL, 65))
+        return ProcesoFalso()
+
+    monkeypatch.setattr(craig_client.subprocess, "run", falso_run)
+
+    assert cocinar("abc", tmp_path / "salida.zip").exists()
+
+
+def test_si_atd_no_arranca_no_se_cocina(tmp_path, monkeypatch):
+    # Antes se llamaba a asegurar_atd y se ignoraba lo que devolvía.
+    monkeypatch.setattr(craig_client, "asegurar_atd", lambda *a, **k: False)
+
+    def no_debe_llamarse(*a, **k):
+        raise AssertionError("no hay que cocinar si atd no está en marcha")
+
+    monkeypatch.setattr(craig_client.subprocess, "run", no_debe_llamarse)
+
+    with pytest.raises(ErrorCraig, match="atd"):
+        cocinar("abc", tmp_path / "salida.zip")
