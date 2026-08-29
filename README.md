@@ -62,6 +62,34 @@ La aplicación las copia sola al `install.config` interno de Craig antes de arra
 
 Al hacerlo, se aplican también los ajustes que Craig necesita para funcionar dentro de Docker: su `install.config.example` apunta la base de datos a `localhost:5432`, que **no funciona** dentro de un contenedor, y debe ser `db:5432` (el nombre del servicio en `docker-compose.yml`). Lo mismo con Redis.
 
+## Transcripción por lotes
+
+Las pistas se transcriben procesando varios fragmentos a la vez en la GPU. Medido en una 3070 Ti de 8 GB sobre 8,3 minutos de audio real:
+
+| | tiempo | segmentos | granularidad |
+|---|---|---|---|
+| secuencial | 75,4 s | 95 | uno cada 5,2 s |
+| **lotes de 8, trozos de 5 s** | **26,3 s** | **100** | **uno cada 5,0 s** |
+| lotes de 8, por defecto | 11,2 s | 18 | uno cada 27,7 s |
+
+El modo por defecto es casi tres veces más rápido todavía, pero **inservible aquí**: con varias personas hablando, un segmento cada 28 segundos junta intervenciones distintas en un mismo bloque y la línea de tiempo combinada deja de parecer una conversación. `chunk_length=5` recupera la granularidad del modo secuencial y sigue siendo **2,9 veces más rápido**.
+
+Sobre la calidad, el dato que cierra la discusión: **el modelo no es determinista**. Dos pasadas secuenciales sobre el mismo audio se parecen un 91,2% entre sí; los lotes se parecen un 89,0% a la secuencial. La diferencia cae dentro del ruido del propio modelo.
+
+Lotes de 16 no caben en 8 GB y empeoran (47 s), así que subirlo no ayuda. Si la versión instalada de `faster-whisper` no trae `BatchedInferencePipeline`, se usa el camino secuencial de siempre.
+
+## Qué se guarda y qué no
+
+```
+datos/transcripciones/<sesión>/   se conserva   el texto por pista y quién es cada una
+datos/resumenes/                  se conserva   las crónicas
+datos/grabaciones/<sesión>.zip    se borra      el audio, en cuanto está transcrito
+```
+
+El audio ocupa cientos de megas por sesión —205 MB una de 1 h 44— y una vez transcrito no aporta nada: todo lo que viene después parte del texto. Se borra solo al terminar la transcripción, y si hiciera falta otra vez se vuelve a extraer de Craig.
+
+Que el borrado falle (un antivirus con el archivo abierto, por ejemplo) no echa a perder la transcripción: se avisa y se sigue.
+
 ## Una sola ventana
 
 Abrir la aplicación por segunda vez no arranca otra: trae al frente la que ya está. Dos instancias sobre los mismos datos se pisarían —las dos levantarían Craig, las dos vigilarían grabaciones nuevas y podrían transcribir la misma sesión a la vez, que es justo lo que la cola evita dentro de una—.

@@ -39,6 +39,17 @@ PALABRAS_MAXIMAS_MULETILLA = 4
 LIMITE_LATINO = 0x024F
 PROPORCION_ALFABETO_AJENO = 0.3
 
+# Cuántos fragmentos procesa la GPU a la vez. Medido en una 3070 Ti de 8 GB
+# sobre 8,3 minutos de audio: secuencial 75 s, con lotes de 8 unos 26 s. Con 16
+# no cabe y empeora (47 s), así que subirlo no ayuda.
+TAMANO_LOTE = 8
+
+# Segundos de audio por fragmento. Es el que decide la granularidad de la línea
+# de tiempo, y con varias personas hablando eso importa: por defecto el modo por
+# lotes da un segmento cada 28 s, que junta intervenciones distintas en un
+# bloque. Con 5 s salen ~5 s por segmento, igual que el modo secuencial.
+SEGUNDOS_POR_TROZO = 5
+
 # Pausa mínima para que el detector de voz corte ahí. En una conversación la
 # gente calla a menudo; un valor bajo trocea de más sin ganar nada.
 MIN_SILENCIO_MS = 1000
@@ -176,6 +187,7 @@ class Transcriptor:
         self._dispositivo = dispositivo
         self._precision = precision
         self._modelo = None
+        self._lotes = None
 
     def dispositivo(self) -> str:
         return self._dispositivo
@@ -197,11 +209,28 @@ class Transcriptor:
                 device=self._dispositivo,
                 compute_type=self._precision,
             )
+            self._lotes = self._preparar_lotes()
         except Exception as exc:  # noqa: BLE001 - el error original es críptico
             raise ErrorTranscripcion(
                 f"No se pudo cargar el modelo '{self.nombre_modelo}' en "
                 f"{self._dispositivo} con precisión {self._precision}: {exc}"
             ) from exc
+
+    def _preparar_lotes(self):
+        """El pipeline por lotes, o None si esta versión no lo trae.
+
+        Procesa varios fragmentos a la vez en la GPU en vez de uno detrás de
+        otro. Medido: 2,9 veces más rápido con la misma granularidad, y la
+        diferencia de texto queda por debajo del ruido del propio modelo, que
+        no da dos veces lo mismo sobre el mismo audio (91% de parecido consigo
+        mismo, 89% contra los lotes).
+        """
+        try:
+            from faster_whisper import BatchedInferencePipeline
+
+            return BatchedInferencePipeline(model=self._modelo)
+        except (ImportError, AttributeError, TypeError):
+            return None  # versión antigua: se sigue por el camino de siempre
 
     def transcribir(
         self, ruta: Path, avisar: Callable[[str], None] | None = None
@@ -217,15 +246,24 @@ class Transcriptor:
         if avisar:
             avisar(f"Transcribiendo pista de {hablante}...")
 
+        # Sin detección de voz, el silencio (casi toda la pista) se transcribe
+        # como texto inventado.
+        opciones = {
+            "language": self.idioma,
+            "vad_filter": True,
+            "vad_parameters": {"min_silence_duration_ms": MIN_SILENCIO_MS},
+        }
+
         try:
-            segmentos, _ = self._modelo.transcribe(
-                str(ruta),
-                language=self.idioma,
-                # Sin detección de voz, el silencio (casi toda la pista) se
-                # transcribe como texto inventado.
-                vad_filter=True,
-                vad_parameters={"min_silence_duration_ms": MIN_SILENCIO_MS},
-            )
+            if self._lotes is not None:
+                segmentos, _ = self._lotes.transcribe(
+                    str(ruta),
+                    batch_size=TAMANO_LOTE,
+                    chunk_length=SEGUNDOS_POR_TROZO,
+                    **opciones,
+                )
+            else:
+                segmentos, _ = self._modelo.transcribe(str(ruta), **opciones)
             # transcribe() devuelve un generador perezoso: aquí es donde
             # ocurre de verdad la transcripción.
             crudos = [

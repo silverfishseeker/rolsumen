@@ -154,3 +154,38 @@ def test_un_fallo_anterior_si_se_reintenta(monkeypatch, entorno):
     orquestador.procesar_pendientes(cfg.Config())
 
     assert procesadas == ["a"], "los fallos se reintentan a propósito"
+
+
+# --- El audio se tira una vez transcrito -------------------------------------
+
+
+def test_el_zip_se_borra_al_terminar(tmp_path):
+    """El audio son cientos de megas por sesión; lo que importa es el texto."""
+    zip_audio = tmp_path / "sesion.zip"
+    zip_audio.write_bytes(b"x" * 2_000_000)
+    avisos = []
+
+    assert orquestador._tirar_audio(zip_audio, avisos.append) is True
+    assert not zip_audio.exists()
+    assert "MB" in avisos[0] and "transcrito" in avisos[0]
+
+
+def test_si_el_zip_ya_no_esta_no_se_falla(tmp_path):
+    avisos = []
+
+    assert orquestador._tirar_audio(tmp_path / "no_existe.zip", avisos.append) is False
+    assert avisos == [], "no hay nada que anunciar"
+
+
+def test_borrar_el_audio_nunca_tumba_la_transcripcion(tmp_path, monkeypatch):
+    """Un ZIP bloqueado por otro programa no debe echar a perder el trabajo."""
+    zip_audio = tmp_path / "sesion.zip"
+    zip_audio.write_bytes(b"x")
+
+    def bloqueado(_self):
+        raise OSError("en uso por otro proceso")
+
+    monkeypatch.setattr(orquestador.Path, "unlink", bloqueado)
+
+    assert orquestador._tirar_audio(zip_audio, lambda _m: None) is False
+    assert zip_audio.exists()

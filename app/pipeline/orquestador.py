@@ -235,6 +235,24 @@ def etiqueta_de(grabacion: Grabacion) -> str:
     return f"{grabacion.etiqueta_fecha}_{grabacion.id}"
 
 
+def _tirar_audio(zip_audio: Path, avisar: Avisar) -> bool:
+    """Borra el ZIP de audio una vez transcrito.
+
+    Lo que hace falta para todo lo demás son las transcripciones, que ya están
+    guardadas; el audio son cientos de megas por sesión (205 MB una de 1 h 44).
+    Si algún día hiciera falta otra vez, se vuelve a extraer de Craig.
+
+    Sólo se llama tras guardar las transcripciones sin errores.
+    """
+    try:
+        megas = zip_audio.stat().st_size / 1e6
+        zip_audio.unlink()
+    except OSError:
+        return False  # que no se pueda borrar no es motivo para fallar
+    avisar(f"Audio descartado, ya está transcrito ({megas:.0f} MB liberados).")
+    return True
+
+
 def transcribir_grabacion(
     grabacion: Grabacion,
     configuracion: cfg.Config,
@@ -275,6 +293,7 @@ def transcribir_grabacion(
                     )
 
         avisar(f"Transcripción de {etiqueta} terminada.")
+        _tirar_audio(zip_destino, avisar)
         return ResultadoProceso(etiqueta, ok=True)
 
     except Cancelacion:
