@@ -1,1 +1,1 @@
-"""Bot de música: un comando (/play) y el control en botones."""
+"""Bot de música: dos comandos (/play, /playsinbucle) y el control en botones."""

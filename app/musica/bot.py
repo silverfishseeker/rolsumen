@@ -1,8 +1,10 @@
-"""El bot de música: un comando y un mensaje con botones.
+"""El bot de música: dos comandos y un mensaje con botones.
 
-Mismo patrón que Craig, que es el que ya funciona aquí: `/play` para pedir algo
-y el control en botones dentro del mensaje, no en más comandos. Así el menú `/`
-de Discord se queda con dos entradas en total entre los dos bots.
+Mismo patrón que Craig, que es el que ya funciona aquí: se pide una pista con un
+comando y todo el control va en botones dentro del mensaje. `/play` la deja en
+bucle y `/playsinbucle` no; son dos comandos porque en Discord toda opción se
+escribe `nombre:valor`, así que como parámetro habría que desplegar un sí/no
+cada vez.
 
 Todo lo que puede fallar (YouTube, la red, el canal de voz) se responde al
 usuario; nada de esto puede tumbar el hilo del bot ni, mucho menos, la ventana.
@@ -12,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 
 from .. import dependencias
 from .busqueda import ErrorBusqueda, resolver
@@ -33,6 +36,7 @@ def _texto_estado(lista: Lista, pausado: bool) -> str:
     cabecera = "⏸ En pausa" if pausado else "♪ Sonando"
     lineas = [f"**{cabecera}:** {lista.actual.como_texto()}"]
 
+    # El bucle no se menciona aquí: lo dice el botón, y en dos sitios estorba.
     detalles = []
     if lista.actual.pedida_por:
         detalles.append(f"pedida por {lista.actual.pedida_por}")
@@ -55,6 +59,9 @@ class Reproductor:
         self.lista = Lista()
         self.voz = None
         self.mensaje = None
+        # Lo pone «Siguiente» para que al terminar la pista no se repita aunque
+        # tenga el bucle puesto: pedir la siguiente manda sobre el bucle.
+        self._saltando = False
 
     # ------------------------------------------------------------ estado --
 
@@ -99,8 +106,15 @@ class Reproductor:
         asyncio.run_coroutine_threadsafe(self._avanzar(), self.bot.loop)
 
     async def _avanzar(self) -> None:
+        repetir = bool(
+            self.lista.actual and self.lista.actual.bucle and not self._saltando
+        )
+        self._saltando = False
+        if repetir:
+            await self.reproducir_actual()
+            return
         if self.lista.siguiente() is None:
-            await self.refrescar_mensaje()
+            await self.retirar_mensaje()
             await self.desconectar()
             return
         await self.reproducir_actual()
@@ -113,6 +127,9 @@ class Reproductor:
             self.voz.play(self._fuente(pista), after=self._al_acabar)
         except Exception as exc:  # noqa: BLE001 - una pista mala no para la cola
             self.avisar(f"no se pudo reproducir «{pista.titulo}»: {exc}")
+            # Con el bucle puesto, reintentar una pista rota sería un bucle de
+            # verdad: hay que saltarla igual que si se hubiera pulsado.
+            self._saltando = True
             await self._avanzar()
             return
         await self.refrescar_mensaje()
@@ -121,9 +138,13 @@ class Reproductor:
 
     def saltar(self) -> bool:
         if self.voz and (self.voz.is_playing() or self.voz.is_paused()):
+            self._saltando = True
             self.voz.stop()  # dispara `after`, que encadena la siguiente
             return True
         return False
+
+    def alternar_bucle(self) -> bool:
+        return self.lista.alternar_bucle()
 
     def pausar_o_reanudar(self) -> bool:
         if not self.voz:
@@ -137,6 +158,22 @@ class Reproductor:
         return True
 
     # ----------------------------------------------------------- mensaje --
+
+    async def retirar_mensaje(self) -> None:
+        """Borra el mensaje de controles y deja de seguirlo.
+
+        Unos controles de algo que ya no suena no controlan nada. Y si se
+        quedaran apuntados, la próxima pista los editaría **y** publicaría
+        otros: dos mensajes de control a la vez, los dos con el mismo título.
+        Pasaba con `/playsinbucle`, el único que llega a vaciar la cola.
+        """
+        mensaje, self.mensaje = self.mensaje, None
+        if mensaje is None:
+            return
+        try:
+            await mensaje.delete()
+        except Exception:  # noqa: BLE001 - lo habrán borrado ya; da igual
+            pass
 
     async def refrescar_mensaje(self) -> None:
         """Edita el mensaje de control en vez de publicar uno nuevo."""
@@ -159,40 +196,59 @@ class Controles:
 
         vista = discord.ui.View(timeout=None)
 
-        async def responder(interaccion, accion) -> None:
+        async def responder(interaccion, accion, refrescar=True) -> None:
             try:
                 accion()
-                await reproductor.refrescar_mensaje()
+                if refrescar:
+                    await reproductor.refrescar_mensaje()
                 await interaccion.response.defer()
             except Exception as exc:  # noqa: BLE001
                 registro.warning("fallo atendiendo un botón: %s", exc)
                 if not interaccion.response.is_done():
                     await interaccion.response.defer()
 
+        en_bucle = bool(reproductor.lista.actual and reproductor.lista.actual.bucle)
+
         etiqueta = "Reanudar" if reproductor.pausado else "Pausa"
         pausa = discord.ui.Button(label=etiqueta, style=discord.ButtonStyle.secondary)
-        saltar = discord.ui.Button(label="Saltar", style=discord.ButtonStyle.secondary)
-        parar = discord.ui.Button(label="Parar", style=discord.ButtonStyle.danger)
+        # El botón dice cómo está, no lo que hará: leerlo de un vistazo importa
+        # más que adivinar el efecto de pulsarlo, que además es reversible.
+        bucle = discord.ui.Button(
+            label="Bucle: sí" if en_bucle else "Bucle: no",
+            style=discord.ButtonStyle.primary if en_bucle else discord.ButtonStyle.secondary,
+        )
+        siguiente = discord.ui.Button(
+            label="Siguiente", style=discord.ButtonStyle.secondary
+        )
+        quitar = discord.ui.Button(label="Quitar", style=discord.ButtonStyle.danger)
 
         async def al_pausar(i):
             await responder(i, reproductor.pausar_o_reanudar)
 
-        async def al_saltar(i):
-            await responder(i, reproductor.saltar)
+        async def al_bucle(i):
+            await responder(i, reproductor.alternar_bucle)
 
-        async def al_parar(i):
+        async def al_siguiente(i):
+            # Sin refrescar aquí: `stop()` encadena la siguiente desde otro
+            # hilo y quien la pone ya actualiza el mensaje. Refrescar también
+            # desde aquí mete una edición con el título viejo que puede llegar
+            # después y dejar el mensaje mintiendo.
+            await responder(i, reproductor.saltar, refrescar=False)
+
+        async def al_quitar(i):
             reproductor.lista.vaciar()
             if reproductor.voz:
                 reproductor.voz.stop()
             await reproductor.desconectar()
-            await reproductor.refrescar_mensaje()
+            await reproductor.retirar_mensaje()
             if not i.response.is_done():
                 await i.response.defer()
 
         pausa.callback = al_pausar
-        saltar.callback = al_saltar
-        parar.callback = al_parar
-        for boton in (pausa, saltar, parar):
+        bucle.callback = al_bucle
+        siguiente.callback = al_siguiente
+        quitar.callback = al_quitar
+        for boton in (pausa, bucle, siguiente, quitar):
             vista.add_item(boton)
         return vista
 
@@ -241,8 +297,24 @@ async def _responder(interaccion, texto: str) -> None:
         pass
 
 
+async def retirar_controles(bot) -> None:
+    """Quita los mensajes de control y sale de los canales de voz.
+
+    Se llama al cerrar la aplicación. Unos controles huérfanos no responden a
+    los botones y siguen anunciando una pista que ya no suena: desde el canal
+    parece que el bot está puesto cuando no hay nadie al otro lado.
+    """
+    for repro in list(getattr(bot, "reproductores", {}).values()):
+        try:
+            repro.lista.vaciar()
+            await repro.retirar_mensaje()
+            await repro.desconectar()
+        except Exception as exc:  # noqa: BLE001 - uno mal no impide los demás
+            registro.warning("no se pudo recoger un reproductor: %s", exc)
+
+
 def crear_bot(carpeta: str, avisar=None):
-    """El cliente de Discord con `/play` registrado. Importa discord aquí."""
+    """El cliente de Discord con sus comandos. Importa discord aquí."""
     import discord
     from discord import app_commands
 
@@ -276,9 +348,13 @@ def crear_bot(carpeta: str, avisar=None):
                 registro.warning("no se pudo sincronizar en %s: %s", servidor, exc)
         contar(f"listo como {bot.user} en {len(bot.guilds)} servidor(es)")
 
-    @bot.tree.command(name="play", description="Pon música en tu canal de voz.")
-    @app_commands.describe(consulta="Nombre, búsqueda de YouTube o enlace")
-    async def play(interaccion, consulta: str):
+    async def poner(interaccion, consulta: str, bucle: bool) -> None:
+        """El cuerpo de los dos comandos: sólo cambia el bucle.
+
+        Son dos comandos y no un parámetro porque en Discord toda opción se
+        escribe `nombre:valor`: poner una pista sin bucle obligaba a desplegar
+        un sí/no. Como comando aparte se teclea de un tirón.
+        """
         canal = getattr(interaccion.user.voice, "channel", None)
         if canal is None:
             await interaccion.response.send_message(
@@ -300,6 +376,9 @@ def crear_bot(carpeta: str, avisar=None):
             await _responder(interaccion, str(exc))
             return
 
+        # El bucle acompaña a la pista, así que se decide al encolarla y no
+        # cambia cuando le llegue el turno.
+        pista = replace(pista, bucle=bucle)
         puesto = repro.lista.anadir(pista)
         if puesto:
             contar(f"en cola ({puesto}): {pista.titulo}")
@@ -309,6 +388,9 @@ def crear_bot(carpeta: str, avisar=None):
             return
 
         contar(f"poniendo «{pista.titulo}» en {canal.name}")
+        # Antes de nada, soltar los controles de la vez anterior: aquí no hay
+        # nada sonando, así que lo que quede apuntado está caducado.
+        await repro.retirar_mensaje()
         try:
             await repro.conectar(canal)
         except Exception as exc:  # noqa: BLE001
@@ -338,5 +420,22 @@ def crear_bot(carpeta: str, avisar=None):
         else:
             # Todo bien: los controles son la respuesta, no hace falta nada más.
             await _callar(interaccion)
+
+    donde = "Nombre, búsqueda de YouTube o enlace"
+
+    @bot.tree.command(
+        name="play", description="Pon música en tu canal de voz, repitiéndose."
+    )
+    @app_commands.describe(consulta=donde)
+    async def play(interaccion, consulta: str):
+        await poner(interaccion, consulta, bucle=True)
+
+    @bot.tree.command(
+        name="playsinbucle",
+        description="Igual que /play, pero suena una vez y pasa a la siguiente.",
+    )
+    @app_commands.describe(consulta=donde)
+    async def play_sin_bucle(interaccion, consulta: str):
+        await poner(interaccion, consulta, bucle=False)
 
     return bot

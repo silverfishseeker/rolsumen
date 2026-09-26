@@ -90,12 +90,21 @@ class Servicio:
         finally:
             try:
                 # Deja que las tareas pendientes de `close()` terminen; si no,
-                # asyncio se queja por consola con «Task was destroyed».
-                pendientes = asyncio.all_tasks(bucle)
-                if pendientes:
+                # asyncio se queja por consola con «Task was destroyed». Se
+                # cancelan primero, como hace `Client.run()`: al salir de voz
+                # aún llegan eventos de la pasarela, y si el bucle se cierra
+                # con uno recién programado, el aviso es «coroutine was never
+                # awaited». Dos rondas porque cancelar puede crear más.
+                for _ in range(2):
+                    pendientes = asyncio.all_tasks(bucle)
+                    if not pendientes:
+                        break
+                    for tarea in pendientes:
+                        tarea.cancel()
                     bucle.run_until_complete(
                         asyncio.gather(*pendientes, return_exceptions=True)
                     )
+                bucle.run_until_complete(bucle.shutdown_asyncgens())
             except Exception:  # noqa: BLE001
                 pass
             try:
@@ -148,7 +157,7 @@ class Servicio:
         bucle, bot = self._bucle, self._bot
         if bucle and bot:
             try:
-                asyncio.run_coroutine_threadsafe(bot.close(), bucle)
+                asyncio.run_coroutine_threadsafe(self._despedirse(bot), bucle)
             except Exception:  # noqa: BLE001 - cerrar nunca debe fallar
                 pass
 
@@ -158,3 +167,19 @@ class Servicio:
         self._hilo = None
         self._bot = None
         self._estado = SIN_CONFIGURAR if not self.ajustes.configurado else "parado"
+
+    async def _despedirse(self, bot) -> None:
+        """Recoge lo que dejó en Discord y **luego** cierra.
+
+        Cerrar sin recoger deja el mensaje de controles en el canal: sus
+        botones no responden a nadie y anuncian una pista que ya no suena. Va
+        todo en una corrutina, y no en dos, porque cerrar mientras se borra el
+        mensaje tiraría la sesión a media petición.
+        """
+        try:
+            from .bot import retirar_controles
+
+            await retirar_controles(bot)
+        except Exception as exc:  # noqa: BLE001 - cerrar manda sobre recoger
+            registro.warning("no se pudieron retirar los controles: %s", exc)
+        await bot.close()

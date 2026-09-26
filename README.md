@@ -64,15 +64,18 @@ Al hacerlo, se aplican también los ajustes que Craig necesita para funcionar de
 
 ## Bot de música (opcional)
 
-Un segundo bot, `/play`, para poner ambientación durante la partida. **Es opcional**: sin token en `config.ini` no se arranca y todo lo demás funciona igual.
+Un segundo bot, `/play` y `/playsinbucle`, para poner ambientación durante la partida. **Es opcional**: sin token en `config.ini` no se arranca y todo lo demás funciona igual.
 
 ```
 /play lluvia          → busca «lluvia» en tu carpeta local
 /play taberna medieval → si no está en local, lo busca en YouTube
 /play https://…        → un enlace concreto
+/playsinbucle lluvia → que suene una vez y pase a la siguiente
 ```
 
-Si no hay nada sonando entra a tu canal y reproduce; si ya hay algo, lo encola y te responde en privado con su número. El control va en un **mensaje con botones** —Pausa, Saltar, Parar— que se va editando en vez de acumular mensajes. Mismo patrón que Craig: un comando y un botón.
+Si no hay nada sonando entra a tu canal y reproduce; si ya hay algo, lo encola sin decir nada, porque el mensaje de controles ya dice cuántas esperan turno. El control va en un **mensaje con botones** —Pausa, Bucle, Siguiente, Quitar— que se va editando en vez de acumular mensajes. Mismo patrón que Craig: pedir con un comando, controlar con botones.
+
+**El bucle viene activado**: una pista se repite al acabar en vez de pasar a la siguiente. Es lo que hace falta para ambientación, que tiene que durar toda la escena sin que nadie vuelva a tocar nada. Es de **cada pista**, no del reproductor: el botón —que dice cómo está, `Bucle: sí` o `Bucle: no`— cambia la que suena y las que esperan conservan el suyo. Lo indica sólo el botón: ponerlo también en el título del mensaje era decir dos veces lo mismo. Con `/playsinbucle` la pista entra ya sin él. Son dos comandos y no una opción de `/play` porque en Discord toda opción se escribe `nombre:valor`: quitar el bucle obligaba a desplegar un sí/no en vez de teclear y enviar. *Siguiente* manda sobre el bucle: pasa de pista aunque esté puesto.
 
 ### Por qué es un bot aparte y no Craig
 
@@ -83,6 +86,8 @@ Tampoco ensucia las crónicas: Craig graba la **pista de micrófono de cada pers
 ### Cómo está aislado
 
 El requisito era que un fallo del bot no tocara el resto. Vive en un hilo demonio con su propio bucle asíncrono, `discord.py` se importa tarde (si falta, la aplicación arranca igual) y todo lo que puede fallar —token mal, sin red, Discord caído— se convierte en una línea de la pestaña Estado, nunca en una excepción. `arrancar()` vuelve en 0,00 s y `parar()` espera al hilo, no a la promesa de `close()`: esperar a esa promesa agotaba siempre los 5 segundos enteros.
+
+Al cerrar, el bot **recoge antes de irse**: borra el mensaje de controles y sale del canal de voz, y sólo entonces cierra la sesión. Si no, quedaban unos botones publicados que no responden a nadie y que siguen anunciando una pista que ya no suena. Va todo en una corrutina, y no en dos, porque cerrar mientras se borra el mensaje tiraría la sesión a media petición; el cierre pasa de 0,0 s a **0,7 s**, que sigue muy por debajo del margen de 5.
 
 De la carpeta local se busca por parte del nombre, sin distinguir mayúsculas y también en subcarpetas. De YouTube **no se descarga nada**: yt-dlp da la URL del flujo y ffmpeg la lee sobre la marcha.
 

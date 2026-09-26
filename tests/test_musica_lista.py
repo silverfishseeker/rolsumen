@@ -94,3 +94,46 @@ def test_el_texto_incluye_la_duracion_si_se_conoce():
 
 def test_sin_duracion_solo_sale_el_titulo():
     assert pista("tema").como_texto() == "tema"
+
+
+# --- Bucle por pista ---------------------------------------------------------
+
+
+def test_una_pista_nace_en_bucle():
+    """Lo normal es música de ambiente: tiene que durar toda la escena."""
+    assert pista().bucle
+
+
+def test_alternar_el_bucle_cambia_solo_la_actual():
+    lista = Lista()
+    lista.anadir(pista("suena"))
+    lista.anadir(pista("espera"))
+
+    lista.alternar_bucle()
+
+    assert not lista.actual.bucle
+    assert lista.pendientes[0].bucle, "el bucle es de cada pista, no de la lista"
+
+
+def test_alternar_devuelve_como_queda():
+    lista = Lista()
+    lista.anadir(pista())
+
+    assert lista.alternar_bucle() is False
+    assert lista.alternar_bucle() is True
+
+
+def test_alternar_sin_nada_sonando_no_revienta():
+    assert Lista().alternar_bucle() is False
+
+
+def test_la_pista_que_llega_conserva_su_bucle():
+    """Quitarle el bucle a la que suena no debe contagiar a la siguiente."""
+    lista = Lista()
+    lista.anadir(pista("suena"))
+    lista.anadir(pista("espera"))
+    lista.alternar_bucle()
+
+    lista.siguiente()
+
+    assert lista.actual.bucle

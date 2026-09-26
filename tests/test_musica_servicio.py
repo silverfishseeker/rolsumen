@@ -247,3 +247,78 @@ def test_un_fallo_al_avisar_no_tumba_el_bot(monkeypatch):
 def test_sin_avisador_tambien_funciona():
     # La aplicación es quien lo pasa; en pruebas y en consola no hay ninguno.
     Servicio(Musica()).arrancar()
+
+
+# --- Al cerrar, recoger lo dejado en Discord ----------------------------------
+
+
+class BotDormido:
+    """Se queda esperando como el de verdad, y apunta cuándo se le cierra."""
+
+    def __init__(self, hechos):
+        self.hechos = hechos
+        self.reproductores = {}
+        self.cerrado = False
+
+    def is_closed(self):
+        return self.cerrado
+
+    async def start(self, token):
+        import asyncio
+
+        await asyncio.sleep(3600)
+
+    async def wait_until_ready(self):
+        import asyncio
+
+        await asyncio.sleep(3600)
+
+    async def close(self):
+        self.hechos.append("cerrar")
+        self.cerrado = True
+
+
+def _servicio_en_marcha(monkeypatch, hechos):
+    monkeypatch.setattr(
+        "app.musica.bot.crear_bot", lambda _c, _a=None: BotDormido(hechos)
+    )
+    s = Servicio(ajustes())
+    s.arrancar()
+    assert esperar_a_que(lambda: s._bucle is not None, 3.0)
+    return s
+
+
+def test_al_cerrar_se_retiran_los_controles(monkeypatch):
+    """Si el mensaje se queda, sus botones no responden a nadie.
+
+    Y anuncia una pista que ya no suena, así que desde el canal parece que el
+    bot sigue puesto.
+    """
+    hechos = []
+
+    async def retirada(_bot):
+        hechos.append("retirar")
+
+    monkeypatch.setattr("app.musica.bot.retirar_controles", retirada)
+    s = _servicio_en_marcha(monkeypatch, hechos)
+
+    s.parar(espera=3.0)
+
+    assert esperar_a_que(lambda: hechos == ["retirar", "cerrar"], 3.0), (
+        f"hay que recoger antes de cerrar la sesión; quedó en {hechos}"
+    )
+
+
+def test_si_no_se_pueden_retirar_se_cierra_igual(monkeypatch):
+    """Cerrar manda sobre recoger: la ventana tiene que poder irse."""
+    hechos = []
+
+    async def revienta(_bot):
+        raise RuntimeError("Discord no contesta")
+
+    monkeypatch.setattr("app.musica.bot.retirar_controles", revienta)
+    s = _servicio_en_marcha(monkeypatch, hechos)
+
+    s.parar(espera=3.0)
+
+    assert esperar_a_que(lambda: hechos == ["cerrar"], 3.0)
