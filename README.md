@@ -62,6 +62,52 @@ La aplicación las copia sola al `install.config` interno de Craig antes de arra
 
 Al hacerlo, se aplican también los ajustes que Craig necesita para funcionar dentro de Docker: su `install.config.example` apunta la base de datos a `localhost:5432`, que **no funciona** dentro de un contenedor, y debe ser `db:5432` (el nombre del servicio en `docker-compose.yml`). Lo mismo con Redis.
 
+## Bot de música (opcional)
+
+Un segundo bot, `/play`, para poner ambientación durante la partida. **Es opcional**: sin token en `config.ini` no se arranca y todo lo demás funciona igual.
+
+```
+/play lluvia          → busca «lluvia» en tu carpeta local
+/play taberna medieval → si no está en local, lo busca en YouTube
+/play https://…        → un enlace concreto
+```
+
+Si no hay nada sonando entra a tu canal y reproduce; si ya hay algo, lo encola y te responde en privado con su número. El control va en un **mensaje con botones** —Pausa, Saltar, Parar— que se va editando en vez de acumular mensajes. Mismo patrón que Craig: un comando y un botón.
+
+### Por qué es un bot aparte y no Craig
+
+Un bot sólo puede tener **una conexión de voz por servidor**, y Craig la ocupa mientras graba. Dos bots distintos sí conviven en el mismo canal, así que hacen falta dos aplicaciones de Discord.
+
+Tampoco ensucia las crónicas: Craig graba la **pista de micrófono de cada persona por separado**, no el canal mezclado, así que la música nunca aparece en ninguna transcripción.
+
+### Cómo está aislado
+
+El requisito era que un fallo del bot no tocara el resto. Vive en un hilo demonio con su propio bucle asíncrono, `discord.py` se importa tarde (si falta, la aplicación arranca igual) y todo lo que puede fallar —token mal, sin red, Discord caído— se convierte en una línea de la pestaña Estado, nunca en una excepción. `arrancar()` vuelve en 0,00 s y `parar()` espera al hilo, no a la promesa de `close()`: esperar a esa promesa agotaba siempre los 5 segundos enteros.
+
+De la carpeta local se busca por parte del nombre, sin distinguir mayúsculas y también en subcarpetas. De YouTube **no se descarga nada**: yt-dlp da la URL del flujo y ffmpeg la lee sobre la marcha.
+
+### Permisos por canal: la trampa
+
+El mensaje de controles se publica en el canal donde se escribe `/play`, y un canal puede **denegar «Escribir mensajes»** al bot aunque a nivel de servidor lo tenga. Pasó justo en `#música`.
+
+Antes eso rompía el comando entero: los controles se publicaban **antes** de empezar a reproducir, así que el fallo abortaba todo y no sonaba nada. Desde fuera parecía que el bot estaba roto.
+
+Ahora se reproduce primero y los controles después, como algo deseable pero no imprescindible. Si no se pueden publicar, la música suena igual y se avisa por privado y en el registro de actividad.
+
+### Qué hace y dónde se ve
+
+Todo lo que hace la música aparece en el **registro de actividad** de la pestaña Estado: qué se pone, qué se encola y, sobre todo, qué falla. Sin eso, un vídeo que no se puede reproducir era silencio y nada más: ni sonaba ni había dónde mirar por qué.
+
+Los fallos más habituales de YouTube son vídeos en directo caducados, con restricción de edad o bloqueados por región. `/play` responde en privado con el motivo, y ahora además queda escrito en el registro.
+
+### Dependencias
+
+```bash
+pip install "discord.py[voice]" yt-dlp
+```
+
+`PyNaCl` entra con `[voice]` y hace falta para cifrar el audio. La biblioteca **opus** viene con `discord.py` pero **no se carga sola**: sin cargarla a mano, conectar al canal funciona y no se oye nada, que es el peor tipo de fallo. Se carga en `asegurar_opus()`.
+
 ## Transcripción por lotes
 
 Las pistas se transcriben procesando varios fragmentos a la vez en la GPU. Medido en una 3070 Ti de 8 GB sobre 8,3 minutos de audio real:

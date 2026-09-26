@@ -125,6 +125,36 @@ temperatura = {temperatura}
 # más detallada y más lenta; más grande, más condensada.
 tokens_por_bloque = {tokens}
 
+[musica]
+# Bot de música, opcional. Si dejas el token vacío no se arranca y la
+# aplicación funciona igual que hasta ahora.
+#
+# Es una aplicación de Discord **DISTINTA** a la de Craig, no la misma: un bot
+# sólo puede tener una conexión de voz por servidor, y Craig la ocupa mientras
+# graba. Dos bots distintos sí pueden estar en el mismo canal a la vez.
+#
+# Cómo crearla, en https://discord.com/developers/applications
+#   1. "New Application" -> le pones nombre (por ejemplo: Rolsumen Música)
+#   2. Pestaña "Bot" -> "Reset Token" -> copiar aquí abajo
+#   3. En esa misma pestaña, DESACTIVAR "Public Bot": si no, cualquiera con el
+#      enlace podría invitarlo a su servidor y gastaría tu máquina
+#   4. "General Information" -> copiar el Application ID
+#   5. Invitarlo con este enlace, cambiando TU_APPLICATION_ID:
+#      https://discord.com/oauth2/authorize?client_id=TU_APPLICATION_ID&permissions=3147776&scope=bot%20applications.commands
+#      (esos permisos son: ver canales, conectarse a voz, hablar y escribir)
+
+# Pestaña "Bot" -> botón "Reset Token"
+token_bot =
+
+# "General Information" -> Application ID
+id_aplicacion =
+
+# Carpeta con tu música local (ambientación: lluvia, taberna, combate...).
+# /play busca aquí primero por nombre; lo que encuentre suena siempre, sin
+# depender de YouTube ni de internet. Vacío = sólo YouTube.
+# Ejemplo: carpeta = C:\\Users\\tu_usuario\\Music\\Rol
+carpeta =
+
 [jugadores]
 # Asocia cada usuario de Discord con el nombre de su personaje.
 # Si un usuario no aparece aquí, se usa su nombre de Discord tal cual.
@@ -149,6 +179,25 @@ class Credenciales:
     @property
     def completas(self) -> bool:
         return not self.faltantes()
+
+
+@dataclass
+class Musica:
+    """Credenciales y ajustes del bot de música.
+
+    Es una aplicación de Discord **distinta** a la de Craig: un bot sólo puede
+    tener una conexión de voz por servidor, y Craig la ocupa mientras graba.
+    Dos bots distintos sí conviven en el mismo canal.
+    """
+
+    token_bot: str = ""
+    id_aplicacion: str = ""
+    carpeta: str = ""
+
+    @property
+    def configurado(self) -> bool:
+        """Sin token no hay bot; lo demás tiene alternativa razonable."""
+        return bool(self.token_bot and self.id_aplicacion)
 
 
 # El techo no lo marca el modelo sino la memoria de vídeo: si el modelo y su
@@ -261,6 +310,7 @@ class Config:
     modelos: Modelos = field(default_factory=Modelos)
     jugadores: dict[str, str] = field(default_factory=dict)
     discord: Credenciales = field(default_factory=Credenciales)
+    musica: Musica = field(default_factory=Musica)
 
     def nombre_personaje(self, usuario_discord: str) -> str:
         """Devuelve el nombre del personaje, o el nick de Discord si no hay mapeo."""
@@ -372,6 +422,14 @@ def cargar(ruta: Path = RUTA_CONFIG) -> Config:
             token_bot=_texto(d, "token_bot", ""),
             secreto_cliente=_texto(d, "secreto_cliente", ""),
             id_aplicacion=_texto(d, "id_aplicacion", ""),
+        )
+
+    if parser.has_section("musica"):
+        m = parser["musica"]
+        cfg.musica = Musica(
+            token_bot=_texto(m, "token_bot", ""),
+            id_aplicacion=_texto(m, "id_aplicacion", ""),
+            carpeta=_texto(m, "carpeta", ""),
         )
 
     if parser.has_section("jugadores"):

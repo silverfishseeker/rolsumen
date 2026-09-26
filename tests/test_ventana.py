@@ -15,6 +15,10 @@ import pytest
 from app import gui
 from app.pipeline.cola import RESUMIR, TRANSCRIBIR
 
+# El fixture `ventana` sustituye `_arrancar` por un no-op para no levantar
+# Craig en cada test. Aquí se guarda el de verdad, antes de ningún parche.
+ARRANCAR_DE_VERDAD = gui.Ventana._arrancar
+
 
 @pytest.fixture(scope="module")
 def raiz():
@@ -384,3 +388,134 @@ def test_sin_respuesta_de_ollama_no_se_vacia_la_lista(ventana):
     ventana._poner_modelos([])
 
     assert list(ventana.desplegables[("modelos", "resumen")]["values"]) == ["qwen3:8b"]
+
+
+# --- El bot de música es opcional y no estorba ------------------------------
+
+
+def test_sin_configurar_sale_en_gris_no_en_rojo():
+    """Que no haya bot de música no es un problema: la app hace su trabajo."""
+    texto, color = gui._estado_musica("sin configurar")
+
+    assert color == gui.NEUTRO
+    assert texto == "sin configurar"
+
+
+def test_vacio_tambien_cuenta_como_sin_configurar():
+    assert gui._estado_musica("")[1] == gui.NEUTRO
+
+
+def test_conectado_sale_en_verde():
+    texto, color = gui._estado_musica("conectado como rolmusic (1 servidor(es))")
+
+    assert color == gui.OK
+    assert "rolmusic" in texto
+
+
+def test_arrancando_sale_en_naranja():
+    assert gui._estado_musica("arrancando...")[1] == gui.ESPERA
+
+
+def test_un_fallo_de_verdad_si_sale_en_rojo():
+    assert gui._estado_musica("token rechazado: revísalo en config.ini")[1] == gui.MAL
+
+
+def test_la_musica_tiene_su_fila_en_estado(ventana):
+    assert "musica" in ventana.indicadores
+
+
+def test_el_arranque_lanza_el_bot_sin_esperarlo(ventana, monkeypatch):
+    """Si `arrancar` bloqueara, la ventana tardaría en aparecer."""
+    llamadas = []
+    monkeypatch.setattr(ventana.musica, "arrancar", lambda: llamadas.append(True))
+    monkeypatch.setattr(ventana, "_en_hilo", lambda _f: None)
+    monkeypatch.setattr(gui.cfg, "crear_config_si_falta", lambda: False)
+    monkeypatch.setattr(gui.cfg, "asegurar_carpetas", lambda: None)
+    monkeypatch.setattr(gui.dependencias, "preparar_entorno", lambda: None)
+    monkeypatch.setattr(gui.dependencias, "comprobar_todo", lambda: [])
+    monkeypatch.setattr(gui.orquestador, "limpiar_temporales", lambda: None)
+
+    ARRANCAR_DE_VERDAD(ventana)
+
+    assert llamadas == [True]
+
+
+def test_al_cerrar_se_para_el_bot(ventana, monkeypatch):
+    parado = []
+    monkeypatch.setattr(ventana.musica, "parar", lambda: parado.append(True))
+    monkeypatch.setattr(ventana.cola, "parar", lambda: None)
+    monkeypatch.setattr(gui.docker_manager, "bajar", lambda: None)
+    monkeypatch.setattr(ventana.raiz, "destroy", lambda: None)
+
+    ventana._al_cerrar()
+
+    assert parado == [True]
+
+
+# --- Elegir carpeta con el explorador ---------------------------------------
+
+
+def test_las_dos_carpetas_tienen_boton(ventana):
+    """La de resúmenes y la de música: escribir rutas a mano es incómodo."""
+    for clave in (("general", "carpeta_resumenes"), ("musica", "carpeta")):
+        assert clave in ventana.campos
+
+
+def test_elegir_una_carpeta_la_pone_en_la_casilla(ventana, monkeypatch, tmp_path):
+    monkeypatch.setattr(gui.filedialog, "askdirectory", lambda **k: str(tmp_path))
+    variable = ventana.campos[("musica", "carpeta")]
+
+    ventana._elegir_carpeta(variable, "Carpeta de música")
+
+    assert variable.get() == str(tmp_path)
+
+
+def test_cancelar_no_borra_lo_que_ya_habia(ventana, monkeypatch):
+    """`askdirectory` devuelve cadena vacía al cancelar."""
+    variable = ventana.campos[("musica", "carpeta")]
+    variable.set("C:/mi/musica")
+    monkeypatch.setattr(gui.filedialog, "askdirectory", lambda **k: "")
+
+    ventana._elegir_carpeta(variable, "Carpeta de música")
+
+    assert variable.get() == "C:/mi/musica"
+
+
+def test_se_abre_donde_apunta_la_casilla(ventana, monkeypatch, tmp_path):
+    recibido = {}
+
+    def falso(**kwargs):
+        recibido.update(kwargs)
+        return ""
+
+    monkeypatch.setattr(gui.filedialog, "askdirectory", falso)
+    variable = ventana.campos[("musica", "carpeta")]
+    variable.set(str(tmp_path))
+
+    ventana._elegir_carpeta(variable, "Carpeta de música")
+
+    assert recibido["initialdir"] == str(tmp_path)
+
+
+def test_una_ruta_que_no_existe_no_confunde_al_explorador(ventana, monkeypatch):
+    recibido = {}
+
+    def falso(**kwargs):
+        recibido.update(kwargs)
+        return ""
+
+    monkeypatch.setattr(gui.filedialog, "askdirectory", falso)
+    variable = ventana.campos[("musica", "carpeta")]
+    variable.set("C:/esto/no/existe")
+
+    ventana._elegir_carpeta(variable, "Carpeta de música")
+
+    assert recibido["initialdir"] is None, "mejor la carpeta por defecto"
+
+
+def test_elegir_carpeta_cuenta_como_cambio_pendiente(ventana, monkeypatch, tmp_path):
+    monkeypatch.setattr(gui.filedialog, "askdirectory", lambda **k: str(tmp_path))
+
+    ventana._elegir_carpeta(ventana.campos[("musica", "carpeta")], "x")
+
+    assert str(ventana.boton_guardar["state"]) == "normal"

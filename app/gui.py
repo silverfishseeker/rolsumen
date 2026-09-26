@@ -22,11 +22,13 @@ import threading
 import tkinter as tk
 from dataclasses import dataclass
 from datetime import datetime
-from tkinter import scrolledtext, ttk
+from pathlib import Path
+from tkinter import filedialog, scrolledtext, ttk
 
 from . import config as cfg
 from . import dependencias, docker_manager, instancia
 from .pipeline import cola as modulo_cola
+from .musica import servicio as servicio_musica
 from .pipeline import orquestador, resumidor
 from .craig_client import ErrorCraig
 from .procesos import SIN_CONSOLA
@@ -53,6 +55,7 @@ SERVICIOS = (
     ("ollama", "Ollama (resúmenes)"),
     ("ffmpeg", "ffmpeg (audio)"),
     ("gpu", "GPU (transcripción)"),
+    ("musica", "Música (opcional)"),
 )
 
 # Cada lista sabe qué hace su botón y de dónde saca las filas.
@@ -159,6 +162,25 @@ AYUDA = {
         "este mismo equipo.\n\n"
         "Cámbialo sólo si lo has movido de puerto o si corre en otra "
         "máquina de la red. Si no coincide, no habrá resúmenes."
+    ),
+    ("musica", "token_bot"): (
+        "Token del bot de música. **Es una aplicación de Discord distinta\n\n"
+        "a la de Craig**: un bot sólo puede tener una conexión de voz por "
+        "servidor, y Craig la ocupa mientras graba.\n\n"
+        "Vacío = el bot no se arranca y todo lo demás funciona igual.\n\n"
+        "Al cambiarlo hay que reiniciar la aplicación para que surta efecto."
+    ),
+    ("musica", "id_aplicacion"): (
+        "Application ID del bot de música, no el de Craig.\n\n"
+        "Portal de desarrolladores → tu aplicación → General Information."
+    ),
+    ("musica", "carpeta"): (
+        "Carpeta con tu música local: lluvia, taberna, combate...\n\n"
+        "`/play` busca aquí primero, por parte del nombre y sin distinguir "
+        "mayúsculas, también en subcarpetas.\n\n"
+        "Lo que encuentre aquí suena siempre, sin depender de YouTube ni de "
+        "internet. Vacío = sólo YouTube.\n\n"
+        "Formatos: mp3, ogg, opus, m4a, flac, wav, webm, aac."
     ),
     ("discord", "id_aplicacion"): (
         "Identificador de tu aplicación de Discord.\n\n"
@@ -304,7 +326,23 @@ def _estado_servicios(datos: dict) -> dict[str, tuple[str, str]]:
             if datos.get("gpu")
             else ("sin GPU (irá lento)", ESPERA)
         ),
+        "musica": _estado_musica(datos.get("musica") or ""),
     }
+
+
+def _estado_musica(texto: str) -> tuple[str, str]:
+    """El bot de música es opcional: que no esté no es un problema.
+
+    Por eso «sin configurar» sale en gris y no en rojo: la aplicación hace su
+    trabajo igual sin él.
+    """
+    if not texto or texto == "sin configurar":
+        return ("sin configurar", NEUTRO)
+    if texto.startswith("conectado"):
+        return (texto, OK)
+    if texto.endswith("...") or texto == "parado":
+        return (texto, ESPERA)
+    return (texto, MAL)
 
 
 # Windows agrupa las ventanas por este identificador. Sin él, la aplicación se
@@ -488,6 +526,11 @@ class Ventana:
         # no se considera nada "nuevo", porque lo parecería todo.
         self._conocidas: set[str] | None = None
 
+        # Opcional: sin token en config.ini ni se intenta arrancar.
+        self.musica = servicio_musica.Servicio(
+            self.configuracion.musica, avisar=self._avisar
+        )
+
         self.cola = Cola(
             ejecutar=self._ejecutar_tarea,
             al_cambiar=self._cola_cambio,
@@ -651,7 +694,7 @@ class Ventana:
             general, ("general", "modo"), "Tipo de resumen", inicial[("general", "modo")], cfg.MODOS
         )
         self._entrada(general, ("general", "idioma"), "Idioma (ISO)", inicial[("general", "idioma")])
-        self._entrada(
+        self._carpeta(
             general,
             ("general", "carpeta_resumenes"),
             "Carpeta extra",
@@ -708,6 +751,15 @@ class Ventana:
         self._entrada(
             discord, ("discord", "secreto_cliente"), "Client secret", inicial[("discord", "secreto_cliente")], oculto=True
         )
+
+        musica = ttk.LabelFrame(marco, text="Música (opcional)", padding=8)
+        musica.pack(fill=tk.X, pady=(8, 0))
+        self._entrada(musica, ("musica", "token_bot"), "Token del bot",
+                      inicial[("musica", "token_bot")], oculto=True)
+        self._entrada(musica, ("musica", "id_aplicacion"), "Application ID",
+                      inicial[("musica", "id_aplicacion")])
+        self._carpeta(musica, ("musica", "carpeta"), "Carpeta de música",
+                      inicial[("musica", "carpeta")])
 
         jugadores = ttk.LabelFrame(marco, text="Jugadores", padding=8)
         jugadores.pack(fill=tk.X, pady=(8, 0))
@@ -768,6 +820,38 @@ class Ventana:
         casilla.pack(side=tk.LEFT, fill=tk.X, expand=True)
         explicar(casilla, clave)
         self.campos[clave] = variable
+
+    def _carpeta(self, padre, clave, etiqueta, valor) -> None:
+        """Como una entrada normal, pero con un botón para explorar.
+
+        La ruta se sigue pudiendo escribir o pegar a mano: el botón es una
+        comodidad, no el único camino.
+        """
+        fila = self._fila_de_campo(padre, clave, etiqueta)
+        variable = tk.StringVar(value=valor)
+
+        boton = ttk.Button(
+            fila, text="Elegir…", width=9,
+            command=lambda: self._elegir_carpeta(variable, etiqueta),
+        )
+        boton.pack(side=tk.RIGHT, padx=(6, 0))
+
+        casilla = ttk.Entry(fila, textvariable=variable)
+        casilla.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        explicar(casilla, clave)
+        explicar(boton, clave)
+        self.campos[clave] = variable
+
+    def _elegir_carpeta(self, variable: tk.StringVar, titulo: str) -> None:
+        """Abre el explorador. Cancelar no borra lo que ya hubiera."""
+        actual = variable.get().strip()
+        elegida = filedialog.askdirectory(
+            parent=self.raiz,
+            title=titulo,
+            initialdir=actual if actual and Path(actual).is_dir() else None,
+        )
+        if elegida:
+            variable.set(str(Path(elegida)))
 
     def _desplegable(self, padre, clave, etiqueta, valor, opciones) -> None:
         fila = self._fila_de_campo(padre, clave, etiqueta)
@@ -877,6 +961,10 @@ class Ventana:
         for dependencia in dependencias.comprobar_todo():
             if not dependencia.disponible:
                 self._escribir(f"Aviso ({dependencia.nombre}): {dependencia.ayuda}")
+
+        # Vuelve al instante: el bot se conecta en su propio hilo. Si falla,
+        # sólo cambia su línea en la pestaña Estado.
+        self.musica.arrancar()
 
         self._en_hilo(self._levantar_craig)
 
@@ -1212,6 +1300,12 @@ class Ventana:
             if self.campos[clave].get() != valor
         ]
 
+        # El bot de música coge los ajustes nuevos; si aún no estaba en marcha
+        # y ahora ya hay token, arranca. Cambiar un token en caliente pide
+        # reiniciar, y así se dice en su explicación.
+        self.musica.ajustes = self.configuracion.musica
+        self.musica.arrancar()
+
         # A partir de aquí, lo que hay en pantalla es lo guardado.
         self._anotar_lo_guardado()
         self.boton_guardar.config(state=tk.DISABLED)
@@ -1248,6 +1342,9 @@ class Ventana:
             ("modelos", "temperatura"): str(m.temperatura),
             ("modelos", "tokens_por_bloque"): str(m.tokens_por_bloque),
             ("modelos", "url_ollama"): m.url_ollama,
+            ("musica", "token_bot"): c.musica.token_bot,
+            ("musica", "id_aplicacion"): c.musica.id_aplicacion,
+            ("musica", "carpeta"): c.musica.carpeta,
             ("discord", "id_aplicacion"): d.id_aplicacion,
             ("discord", "token_bot"): d.token_bot,
             ("discord", "secreto_cliente"): d.secreto_cliente,
@@ -1295,6 +1392,7 @@ class Ventana:
                     "ffmpeg": dependencias.comprobar_ffmpeg().disponible,
                     "gpu": gpu.disponible,
                     "gpu_nombre": gpu.ruta,
+                    "musica": self.musica.estado,
                 },
             )
         )
@@ -1304,6 +1402,7 @@ class Ventana:
     def _al_cerrar(self) -> None:
         self._parar.set()
         self.cola.parar()
+        self.musica.parar()
         self._escribir("Cerrando: bajando Craig...")
         self.raiz.update_idletasks()
         try:
