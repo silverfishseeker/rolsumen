@@ -9,6 +9,8 @@ Dos fallos que motivan estos tests:
 
 from datetime import datetime
 
+import json
+
 import pytest
 
 from app import config as cfg
@@ -156,36 +158,114 @@ def test_un_fallo_anterior_si_se_reintenta(monkeypatch, entorno):
     assert procesadas == ["a"], "los fallos se reintentan a propósito"
 
 
-# --- El audio se tira una vez transcrito -------------------------------------
+# --- El audio se conserva ----------------------------------------------------
 
 
-def test_el_zip_se_borra_al_terminar(tmp_path):
-    """El audio son cientos de megas por sesión; lo que importa es el texto."""
+def test_el_zip_se_conserva_al_terminar(tmp_path):
+    """Es la única copia de la sesión: transcribir otra vez debe ser posible."""
     zip_audio = tmp_path / "sesion.zip"
     zip_audio.write_bytes(b"x" * 2_000_000)
     avisos = []
 
-    assert orquestador._tirar_audio(zip_audio, avisos.append) is True
-    assert not zip_audio.exists()
-    assert "MB" in avisos[0] and "transcrito" in avisos[0]
+    assert orquestador._anunciar_audio(zip_audio, avisos.append) is True
+    assert zip_audio.exists(), "el audio no se toca"
+    assert "MB" in avisos[0] and "conservado" in avisos[0]
 
 
 def test_si_el_zip_ya_no_esta_no_se_falla(tmp_path):
     avisos = []
 
-    assert orquestador._tirar_audio(tmp_path / "no_existe.zip", avisos.append) is False
+    assert (
+        orquestador._anunciar_audio(tmp_path / "no_existe.zip", avisos.append) is False
+    )
     assert avisos == [], "no hay nada que anunciar"
 
 
-def test_borrar_el_audio_nunca_tumba_la_transcripcion(tmp_path, monkeypatch):
-    """Un ZIP bloqueado por otro programa no debe echar a perder el trabajo."""
-    zip_audio = tmp_path / "sesion.zip"
-    zip_audio.write_bytes(b"x")
+def transcribir_de_mentira(tmp_path, monkeypatch, usuarios=None):
+    """Una transcripción entera sin Craig, sin GPU y sin tocar `datos/`."""
+    from datetime import datetime
 
-    def bloqueado(_self):
-        raise OSError("en uso por otro proceso")
+    from app.craig_client import Grabacion
+    from app.pipeline.tipos import Segmento
 
-    monkeypatch.setattr(orquestador.Path, "unlink", bloqueado)
+    grabaciones = tmp_path / "grabaciones"
+    grabaciones.mkdir()
+    transcripciones = tmp_path / "transcripciones"
+    monkeypatch.setattr(cfg, "DIR_GRABACIONES", grabaciones)
+    monkeypatch.setattr(cfg, "DIR_TRANSCRIPCIONES", transcripciones)
 
-    assert orquestador._tirar_audio(zip_audio, lambda _m: None) is False
-    assert zip_audio.exists()
+    def cocinar_falso(_id, destino):
+        destino.write_bytes(b"x" * 1_000_000)
+
+    def pistas_falsas(_zip, carpeta):
+        rutas = []
+        for numero in ("1", "2"):
+            pista = carpeta / f"{numero}.flac"
+            pista.write_bytes(b"x")
+            rutas.append(pista)
+        return rutas
+
+    monkeypatch.setattr(orquestador.craig_client, "cocinar", cocinar_falso)
+    monkeypatch.setattr(orquestador.craig_client, "extraer_pistas", pistas_falsas)
+    monkeypatch.setattr(
+        orquestador.craig_client, "usuarios",
+        lambda _id: usuarios if usuarios is not None else {"1": "ana", "2": "leo"},
+    )
+
+    class TranscriptorFalso:
+        def transcribir(self, pista, avisar=None):
+            quien = pista.stem
+            return [Segmento(0.0, 1.0, f"habla {quien}", quien)]
+
+    grabacion = Grabacion(id="abc", creada=datetime(2026, 10, 16), terminada=None)
+    avisos = []
+    resultado = orquestador.transcribir_grabacion(
+        grabacion, cfg.Config(), TranscriptorFalso(), avisos.append
+    )
+    return resultado, grabaciones, transcripciones / "2026-10-16_abc", avisos
+
+
+def test_transcribir_entero_no_se_lleva_el_audio(tmp_path, monkeypatch):
+    """La prueba que importa: tras transcribir, el ZIP sigue en su carpeta.
+
+    Se hace sobre `transcribir_grabacion` y no sobre una función suelta porque
+    lo que se pide es que **al terminar** el audio esté ahí; quién lo borrara
+    da igual.
+    """
+    resultado, grabaciones, _, avisos = transcribir_de_mentira(tmp_path, monkeypatch)
+
+    assert resultado.ok
+    assert (grabaciones / "2026-10-16_abc.zip").exists(), "es la única copia"
+    assert any("conservado" in a for a in avisos), "y se dice dónde queda"
+
+
+def test_transcribir_deja_hablantes_y_linea_de_tiempo(tmp_path, monkeypatch):
+    """Sin esperar al resumen: quién es cada pista sólo lo sabe Craig.
+
+    Craig borra las grabaciones pasado su plazo, y en modo manual el resumen
+    puede llegar días después. Si la correspondencia se guardara entonces,
+    podría no haber ya a quién preguntársela y la crónica saldría con
+    hablantes llamados «1» y «2», sin arreglo posible.
+    """
+    resultado, _, carpeta, _ = transcribir_de_mentira(tmp_path, monkeypatch)
+
+    assert resultado.ok
+    assert json.loads((carpeta / "hablantes.json").read_text(encoding="utf-8")) == {
+        "1": "ana",
+        "2": "leo",
+    }
+    linea = (carpeta / "linea_de_tiempo.txt").read_text(encoding="utf-8")
+    assert "ana" in linea and "leo" in linea
+
+
+def test_si_craig_no_sabe_quien_es_quien_la_transcripcion_vale_igual(
+    tmp_path, monkeypatch
+):
+    """Lo transcrito ya está guardado: esto es un extra, no un requisito."""
+    resultado, _, carpeta, avisos = transcribir_de_mentira(
+        tmp_path, monkeypatch, usuarios={}
+    )
+
+    assert resultado.ok, "transcribir no puede fallar por esto"
+    assert not (carpeta / "hablantes.json").exists(), "no se inventa nada"
+    assert (carpeta / "linea_de_tiempo.txt").exists(), "pero el texto sí sale"

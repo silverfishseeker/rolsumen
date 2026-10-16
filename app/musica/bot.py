@@ -70,11 +70,34 @@ class Reproductor:
         return bool(self.voz and self.voz.is_paused())
 
     async def conectar(self, canal) -> None:
-        """Entra al canal de quien lo pidió, o se cambia si ya estaba en otro."""
-        if self.voz and self.voz.is_connected():
-            if self.voz.channel.id != canal.id:
-                await self.voz.move_to(canal)
+        """Entra al canal de quien lo pidió, o se cambia si ya estaba en otro.
+
+        Quién manda sobre la conexión no es este objeto: es discord.py, que la
+        apunta en el servidor (`guild.voice_client`). Fiarse sólo de `self.voz`
+        sale caro, porque las dos se separan con facilidad —alguien echa al bot
+        del canal, una desconexión falla a medias, el proceso muere sin
+        despedirse— y entonces `canal.connect()` responde **«Already connected
+        to a voice channel»**. Eso no se arregla solo: cada `/play` siguiente
+        falla igual hasta reiniciar la aplicación, que es exactamente la pinta
+        de «la música no va».
+        """
+        suya = getattr(canal.guild, "voice_client", None)
+
+        # Una conexión apuntada pero caída es un fantasma: hay que echarlo
+        # antes de intentar entrar, o `connect()` se niega por su culpa.
+        if suya is not None and not suya.is_connected():
+            try:
+                await suya.disconnect(force=True)
+            except Exception:  # noqa: BLE001 - es justo lo que estaba roto
+                pass
+            suya = None
+
+        if suya is not None:
+            self.voz = suya
+            if suya.channel.id != canal.id:
+                await suya.move_to(canal)
             return
+
         self.voz = await canal.connect()
 
     async def desconectar(self) -> None:

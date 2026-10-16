@@ -14,6 +14,7 @@ ffmpeg la lee sobre la marcha.
 from __future__ import annotations
 
 import re
+import unicodedata
 from pathlib import Path
 
 from .lista import Pista
@@ -40,12 +41,29 @@ class ErrorBusqueda(RuntimeError):
     """No se encontró nada que reproducir."""
 
 
-def buscar_local(consulta: str, carpeta: str) -> Pista | None:
-    """Un archivo de la carpeta cuyo nombre contenga lo buscado.
+_SEPARADORES = re.compile(r"[\W_]+", re.UNICODE)
 
-    La comparación ignora mayúsculas y acentos no: se busca lo que la gente
-    escribiría, «lluvia» para «Lluvia en el bosque.mp3».
+
+def normalizar(texto: str) -> str:
+    """Deja un nombre como se escribiría al buscarlo.
+
+    Nadie teclea «tono_a» ni «Ambientación» con su tilde cuando busca algo
+    deprisa en mitad de una partida: escribe «tono a» y «ambientacion». Así
+    que para comparar se quitan acentos, se tratan como espacios los
+    separadores que usan los nombres de archivo —guion bajo, guion, punto,
+    paréntesis— y se colapsa lo que sobre.
+
+    Es sólo para comparar: el título que se muestra sigue siendo el del
+    archivo, tal cual.
     """
+    sin_tildes = "".join(
+        c for c in unicodedata.normalize("NFKD", texto) if not unicodedata.combining(c)
+    )
+    return " ".join(_SEPARADORES.sub(" ", sin_tildes.lower()).split())
+
+
+def buscar_local(consulta: str, carpeta: str) -> Pista | None:
+    """Un archivo de la carpeta cuyo nombre contenga lo buscado."""
     if not carpeta or not consulta.strip():
         return None
 
@@ -53,7 +71,10 @@ def buscar_local(consulta: str, carpeta: str) -> Pista | None:
     if not raiz.is_dir():
         return None
 
-    agujas = consulta.strip().lower()
+    agujas = normalizar(consulta)
+    if not agujas:
+        return None
+
     candidatos = [
         a
         for a in sorted(raiz.rglob("*"))
@@ -62,10 +83,10 @@ def buscar_local(consulta: str, carpeta: str) -> Pista | None:
 
     # Primero una coincidencia exacta del nombre; si no, que lo contenga.
     for archivo in candidatos:
-        if archivo.stem.lower() == agujas:
+        if normalizar(archivo.stem) == agujas:
             return Pista(archivo.stem, str(archivo), "", local=True)
     for archivo in candidatos:
-        if agujas in archivo.stem.lower():
+        if agujas in normalizar(archivo.stem):
             return Pista(archivo.stem, str(archivo), "", local=True)
     return None
 

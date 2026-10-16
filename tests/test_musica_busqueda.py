@@ -151,3 +151,50 @@ def test_no_se_descarga_nada():
     """Se reproduce en streaming: descargar sería lento y llenaría el disco."""
     assert busqueda.OPCIONES_YTDLP["skip_download"] is True
     assert busqueda.OPCIONES_YTDLP["noplaylist"] is True
+
+
+# --- Lo que la gente teclea no es lo que pone en el archivo -------------------
+
+
+def test_los_guiones_bajos_del_archivo_valen_como_espacios(tmp_path):
+    """Nadie escribe «tono_a» en mitad de una partida: escribe «tono a»."""
+    (tmp_path / "tono_a.mp3").write_bytes(b"x")
+
+    pista = busqueda.buscar_local("tono a", str(tmp_path))
+
+    assert pista is not None and pista.titulo == "tono_a"
+
+
+def test_tambien_valen_guiones_y_puntos(tmp_path):
+    (tmp_path / "Taberna-del-Dragon.ogg").write_bytes(b"x")
+
+    assert busqueda.buscar_local("taberna del dragon", str(tmp_path)) is not None
+
+
+def test_los_acentos_no_hacen_falta(tmp_path):
+    """Buscar con tildes es lento y nadie lo hace con prisa."""
+    (tmp_path / "Ambientación épica.mp3").write_bytes(b"x")
+
+    assert busqueda.buscar_local("ambientacion epica", str(tmp_path)) is not None
+
+
+def test_y_al_reves_tambien(tmp_path):
+    (tmp_path / "ambientacion epica.mp3").write_bytes(b"x")
+
+    assert busqueda.buscar_local("Ambientación Épica", str(tmp_path)) is not None
+
+
+def test_el_titulo_que_se_muestra_es_el_del_archivo(tmp_path):
+    """Normalizar es sólo para comparar; el nombre bonito se conserva."""
+    (tmp_path / "Lluvia_en_el_Bosque.mp3").write_bytes(b"x")
+
+    pista = busqueda.buscar_local("lluvia en el bosque", str(tmp_path))
+
+    assert pista.titulo == "Lluvia_en_el_Bosque"
+
+
+def test_una_consulta_de_solo_separadores_no_encuentra_nada(tmp_path):
+    """«___» normaliza a vacío, y vacío estaría dentro de cualquier nombre."""
+    (tmp_path / "algo.mp3").write_bytes(b"x")
+
+    assert busqueda.buscar_local("___", str(tmp_path)) is None

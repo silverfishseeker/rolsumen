@@ -89,7 +89,7 @@ El requisito era que un fallo del bot no tocara el resto. Vive en un hilo demoni
 
 Al cerrar, el bot **recoge antes de irse**: borra el mensaje de controles y sale del canal de voz, y sólo entonces cierra la sesión. Si no, quedaban unos botones publicados que no responden a nadie y que siguen anunciando una pista que ya no suena. Va todo en una corrutina, y no en dos, porque cerrar mientras se borra el mensaje tiraría la sesión a media petición; el cierre pasa de 0,0 s a **0,7 s**, que sigue muy por debajo del margen de 5.
 
-De la carpeta local se busca por parte del nombre, sin distinguir mayúsculas y también en subcarpetas. De YouTube **no se descarga nada**: yt-dlp da la URL del flujo y ffmpeg la lee sobre la marcha.
+De la carpeta local se busca por parte del nombre, también en subcarpetas, y la comparación es indulgente a propósito: da igual mayúsculas, tildes y separadores, así que `tono a` encuentra `tono_a.mp3` y `ambientacion epica` encuentra `Ambientación Épica.mp3`. Nadie teclea guiones bajos ni tildes en mitad de una partida. El título que se muestra sigue siendo el del archivo, tal cual. De YouTube **no se descarga nada**: yt-dlp da la URL del flujo y ffmpeg la lee sobre la marcha.
 
 ### Permisos por canal: la trampa
 
@@ -98,6 +98,12 @@ El mensaje de controles se publica en el canal donde se escribe `/play`, y un ca
 Antes eso rompía el comando entero: los controles se publicaban **antes** de empezar a reproducir, así que el fallo abortaba todo y no sonaba nada. Desde fuera parecía que el bot estaba roto.
 
 Ahora se reproduce primero y los controles después, como algo deseable pero no imprescindible. Si no se pueden publicar, la música suena igual y se avisa por privado y en el registro de actividad.
+
+### La conexión de voz la manda discord.py, no el reproductor
+
+Quién sabe de verdad si el bot está en un canal es `guild.voice_client`, la anotación que lleva discord.py en el servidor. Fiarse sólo de la referencia propia sale caro: las dos se separan con facilidad —echan al bot del canal, una desconexión falla a medias, el proceso muere sin despedirse— y entonces `connect()` responde **«Already connected to a voice channel»**.
+
+Lo malo no es el fallo, es que **no se arregla solo**: la conexión fantasma sigue apuntada y cada `/play` siguiente falla igual hasta reiniciar la aplicación. Desde fuera, «la música ha dejado de funcionar». Ahora se mira primero lo que dice el servidor: si hay una conexión viva se aprovecha (o se mueve de canal), y si está caída se echa antes de entrar.
 
 ### Qué hace y dónde se ve
 
@@ -132,14 +138,19 @@ Lotes de 16 no caben en 8 GB y empeoran (47 s), así que subirlo no ayuda. Si la
 ## Qué se guarda y qué no
 
 ```
-datos/transcripciones/<sesión>/   se conserva   el texto por pista y quién es cada una
+datos/transcripciones/<sesión>/   se conserva   el texto por pista, quién es cada una
+                                                y la línea de tiempo combinada
 datos/resumenes/                  se conserva   las crónicas
-datos/grabaciones/<sesión>.zip    se borra      el audio, en cuanto está transcrito
+datos/grabaciones/<sesión>.zip    se conserva   el audio original de la sesión
 ```
 
-El audio ocupa cientos de megas por sesión —205 MB una de 1 h 44— y una vez transcrito no aporta nada: todo lo que viene después parte del texto. Se borra solo al terminar la transcripción, y si hiciera falta otra vez se vuelve a extraer de Craig.
+**No se borra nada solo.** El audio ocupa cientos de megas por sesión —205 MB una de 1 h 44— pero es la única copia: transcribir otra vez con otro modelo o con otros ajustes necesita el audio, y volver a sacarlo de Craig sólo funciona mientras Craig conserve esa grabación. Al terminar se dice en el registro cuánto ocupa, para poder vaciar la carpeta a mano cuando convenga.
 
-Que el borrado falle (un antivirus con el archivo abierto, por ejemplo) no echa a perder la transcripción: se avisa y se sigue.
+### Por qué `hablantes.json` se escribe al transcribir
+
+Quién es cada pista no sale del audio: sale de `<ID>.ogg.users`, un archivo que vive **dentro de Craig**, y Craig borra las grabaciones pasado su plazo de retención. Antes esa correspondencia se guardaba al resumir, que es el segundo paso; en modo manual eso puede ser días más tarde, cuando ya no quede a quién preguntar. La crónica saldría entonces con hablantes llamados «1», «2» y «3» **sin arreglo posible**, porque el dato ya no existe en ninguna parte.
+
+Ahora se guarda al terminar de transcribir, que es cuando con seguridad se puede preguntar: se acaba de sacar el audio de Craig. La línea de tiempo se escribe ahí mismo por lo mismo y porque vale por sí sola —es el texto legible de la sesión— y no necesita a Ollama para nada. Que cualquiera de las dos cosas falle no echa a perder la transcripción, que ya está guardada: se avisa y se sigue.
 
 ## Una sola ventana
 
@@ -516,3 +527,9 @@ De paso: un timeout ya no se reporta como *"¿Está Ollama en marcha?"*. Ese men
 
 - **Arrancar Craig por primera vez.** Requiere los dos secretos de Discord en `install.config`. Hasta entonces no se ha podido comprobar de verdad el arranque de los contenedores ni una grabación real.
 - **Probar con una sesión larga de verdad.** El troceado en varios bloques y el contexto en cadena están implementados y cubiertos por tests, pero solo se han ejercitado con transcripciones cortas (un único bloque).
+- **Conservar el audio como copia de seguridad.** No implementado todavía.
+  - Hoy el ZIP de `datos/grabaciones/` se borra al terminar de transcribir, y Craig purga los originales a los 7 días (`expiresAt` en `Recording`). Pasado ese plazo el audio no existe en ningún sitio.
+  - Idea: no borrar el ZIP, o moverlo a `datos/grabaciones_archivo/`, y hacerlo configurable en `config.ini` (por ejemplo `conservar_audio = si`).
+  - Valorar el espacio: una sesión de unas 2,5 h ocupa unos 370 MB en ZIP.
+  - Si se archiva, que el borrado manual sea explícito desde la pestaña Trabajo.
+  - Afecta a `orquestador.py`, donde hoy se hace `zip_audio.unlink()` tras la transcripción.

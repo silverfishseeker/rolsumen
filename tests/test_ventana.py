@@ -274,7 +274,14 @@ def test_los_predeterminados_rellenan_general_y_modelos(ventana):
 
 
 def test_los_predeterminados_no_guardan_solos(ventana):
-    """Se dejan puestos para revisarlos; confirmarlos es cosa de Guardar."""
+    """Se dejan puestos para revisarlos; confirmarlos es cosa de Guardar.
+
+    Lo guardado tiene que diferir de fábrica para que restaurar sea un cambio,
+    y eso se fuerza aquí en vez de heredarlo del `config.ini` de quien ejecute
+    los tests: con uno que ya estuviera en valores de fábrica, este test
+    empezaba a fallar sin que nadie tocara una línea de código.
+    """
+    ventana._guardado[("general", "idioma")] = "xx"
     ventana.campos[("general", "idioma")].set("xx")
 
     ventana._poner_predeterminados()

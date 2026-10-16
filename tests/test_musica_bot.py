@@ -17,13 +17,30 @@ from app.musica import bot as modulo
 from app.musica.lista import Pista
 
 
+class ServidorFalso:
+    """Discord apunta la conexión de voz **aquí**, no en el reproductor.
+
+    Modelarlo importa: el reproductor y esta anotación se pueden separar, y
+    cuando eso pasa `connect()` se niega. Un canal de mentira sin servidor
+    dejaba ese camino sin probar.
+    """
+
+    def __init__(self):
+        self.voice_client = None
+
+
 class VozFalsa:
     """Una conexión de voz que no habla con Discord: sólo apunta qué se puso."""
 
-    def __init__(self):
+    def __init__(self, canal=None, servidor=None):
+        self.channel = canal
+        self.servidor = servidor
         self.puestas = []
         self.conectada = True
         self.sonando = False
+
+    async def move_to(self, canal):
+        self.channel = canal
 
     def play(self, fuente, after=None):
         self.puestas.append(fuente)
@@ -43,6 +60,8 @@ class VozFalsa:
 
     async def disconnect(self, force=False):
         self.conectada = False
+        if self.servidor is not None and self.servidor.voice_client is self:
+            self.servidor.voice_client = None
 
 
 class MensajeFalso:
@@ -62,9 +81,10 @@ class MensajeFalso:
 
 
 class CanalFalso:
-    def __init__(self, nombre="música", puede_escribir=True):
+    def __init__(self, nombre="música", puede_escribir=True, servidor=None):
         self.id = 1
         self.name = nombre
+        self.guild = servidor or ServidorFalso()
         self.puede_escribir = puede_escribir
         self.publicados = []
         self.enviados = []
@@ -83,7 +103,13 @@ class CanalFalso:
         return [m for m in self.enviados if not m.borrado]
 
     async def connect(self):
-        return VozFalsa()
+        # Como discord.py: si el servidor ya tiene una conexión apuntada, se
+        # niega. Da igual que esté caída; mientras esté ahí, no se puede entrar.
+        if self.guild.voice_client is not None:
+            raise RuntimeError("Already connected to a voice channel.")
+        voz = VozFalsa(self, self.guild)
+        self.guild.voice_client = voz
+        return voz
 
 
 class RespuestaFalsa:
@@ -512,3 +538,52 @@ def test_un_reproductor_atascado_no_impide_recoger_los_demas(monkeypatch):
 
 def test_sin_reproductores_no_hay_nada_que_recoger():
     ejecutar(modulo.retirar_controles(type("B", (), {})()))
+
+
+# --- La conexión de voz y el servidor no pueden separarse ---------------------
+
+
+def test_una_conexion_fantasma_no_deja_al_bot_sin_entrar(entorno):
+    """El fallo pegajoso: a partir de ahí **ningún** /play vuelve a funcionar.
+
+    Discord sigue teniendo apuntada una conexión que ya no está viva —echan al
+    bot del canal, el proceso muere sin despedirse, una desconexión falla a
+    medias— y `connect()` se niega con «Already connected to a voice channel».
+    Como el fantasma no se va solo, la música queda rota hasta reiniciar.
+    """
+    play, repro = entorno
+    canal = CanalFalso()
+    fantasma = VozFalsa(canal, canal.guild)
+    fantasma.conectada = False
+    canal.guild.voice_client = fantasma
+
+    ejecutar(play(InteraccionFalsa(canal), "lluvia"))
+
+    assert repro.orden == ["retirar", "conectar", "reproducir"], "tiene que sonar"
+    assert canal.guild.voice_client is repro.voz, "y la conexión buena queda apuntada"
+
+
+def test_si_ya_hay_conexion_viva_se_aprovecha(entorno):
+    """Entrar otra vez a lo bruto daría «Already connected» aunque todo vaya bien."""
+    play, repro = entorno
+    canal = CanalFalso()
+    buena = VozFalsa(canal, canal.guild)
+    canal.guild.voice_client = buena
+
+    ejecutar(play(InteraccionFalsa(canal), "lluvia"))
+
+    assert repro.voz is buena, "se reaprovecha la que hay"
+    assert buena.puestas, "y suena por ella"
+
+
+def test_si_la_conexion_viva_esta_en_otro_canal_se_cambia(entorno):
+    play, repro = entorno
+    otro = CanalFalso(nombre="cuarto de al lado")
+    canal = CanalFalso(servidor=otro.guild)
+    canal.id = 2
+    buena = VozFalsa(otro, otro.guild)
+    otro.guild.voice_client = buena
+
+    ejecutar(play(InteraccionFalsa(canal), "lluvia"))
+
+    assert buena.channel is canal, "se mueve al canal de quien lo pidió"

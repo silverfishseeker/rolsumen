@@ -152,6 +152,57 @@ def _mapa_hablantes(
     return mapa
 
 
+def escribir_linea_de_tiempo(
+    pistas: list[list[Segmento]],
+    etiqueta: str,
+    configuracion: cfg.Config,
+    avisar: Avisar = _no_avisar,
+) -> list[Segmento]:
+    """Mezcla las pistas en una sola línea y la deja escrita junto a ellas.
+
+    De paso, `_mapa_hablantes` guarda `hablantes.json`.
+    """
+    linea = combinador.combinar(
+        pistas, mapa_personajes=_mapa_hablantes(etiqueta, configuracion, avisar)
+    )
+    if not linea:
+        raise ErrorTranscripcion("No se transcribió nada. ¿Hay voz audible?")
+
+    carpeta = cfg.DIR_TRANSCRIPCIONES / etiqueta
+    carpeta.mkdir(parents=True, exist_ok=True)
+    (carpeta / "linea_de_tiempo.txt").write_text(
+        combinador.a_texto(linea), encoding="utf-8"
+    )
+    return linea
+
+
+def _cerrar_transcripcion(
+    etiqueta: str, configuracion: cfg.Config, avisar: Avisar
+) -> bool:
+    """Deja escritos `hablantes.json` y `linea_de_tiempo.txt` al transcribir.
+
+    No es adelantar trabajo del resumen: es que **aquí todavía se puede**.
+    Quién es cada pista sale de `<ID>.ogg.users`, que vive dentro de Craig, y
+    Craig borra las grabaciones pasado su plazo de retención. Esperar al
+    resumen —que en modo manual puede ser días después— arriesga llegar sin
+    nadie a quien preguntar, y entonces la crónica sale con hablantes llamados
+    «1», «2» y «3», sin forma de arreglarlo.
+
+    La línea de tiempo se escribe por lo mismo y porque vale por sí sola: es
+    el texto legible de la sesión y no necesita a Ollama para nada.
+
+    Que esto falle no echa a perder la transcripción, que ya está guardada.
+    """
+    try:
+        pistas = [cargar_transcripcion(a) for a in pistas_transcritas(etiqueta)]
+        escribir_linea_de_tiempo(pistas, etiqueta, configuracion, avisar)
+    except Exception as exc:  # noqa: BLE001 - lo transcrito ya está a salvo
+        avisar(f"Aviso: no se pudo preparar la línea de tiempo ({exc}).")
+        return False
+    avisar("Línea de tiempo y hablantes guardados junto a las pistas.")
+    return True
+
+
 def _guardar_resumen(
     documento: str, nombre: str, destinos: list[Path], avisar: Avisar
 ) -> Path:
@@ -190,17 +241,7 @@ def _combinar_y_resumir(
     """
     fecha = etiqueta.partition("_")[0]
 
-    linea = combinador.combinar(
-        pistas, mapa_personajes=_mapa_hablantes(etiqueta, configuracion, avisar)
-    )
-    if not linea:
-        raise ErrorTranscripcion("No se transcribió nada. ¿Hay voz audible?")
-
-    carpeta = cfg.DIR_TRANSCRIPCIONES / etiqueta
-    carpeta.mkdir(parents=True, exist_ok=True)
-    (carpeta / "linea_de_tiempo.txt").write_text(
-        combinador.a_texto(linea), encoding="utf-8"
-    )
+    linea = escribir_linea_de_tiempo(pistas, etiqueta, configuracion, avisar)
 
     modelos = configuracion.modelos
     bloques = troceador.trocear(linea, presupuesto=modelos.tokens_por_bloque)
@@ -235,21 +276,20 @@ def etiqueta_de(grabacion: Grabacion) -> str:
     return f"{grabacion.etiqueta_fecha}_{grabacion.id}"
 
 
-def _tirar_audio(zip_audio: Path, avisar: Avisar) -> bool:
-    """Borra el ZIP de audio una vez transcrito.
+def _anunciar_audio(zip_audio: Path, avisar: Avisar) -> bool:
+    """Dice dónde queda el ZIP de audio ya transcrito.
 
-    Lo que hace falta para todo lo demás son las transcripciones, que ya están
-    guardadas; el audio son cientos de megas por sesión (205 MB una de 1 h 44).
-    Si algún día hiciera falta otra vez, se vuelve a extraer de Craig.
-
-    Sólo se llama tras guardar las transcripciones sin errores.
+    **No se borra.** El audio es la única copia de la sesión: la transcripción
+    puede repetirse con otro modelo o otros ajustes, y volver a sacarlo de
+    Craig sólo funciona mientras Craig conserve la grabación. Son cientos de
+    megas por sesión (205 MB una de 1 h 44), así que se dice el tamaño para
+    que se sepa lo que ocupa y se pueda vaciar la carpeta a mano.
     """
     try:
         megas = zip_audio.stat().st_size / 1e6
-        zip_audio.unlink()
     except OSError:
-        return False  # que no se pueda borrar no es motivo para fallar
-    avisar(f"Audio descartado, ya está transcrito ({megas:.0f} MB liberados).")
+        return False  # no estará; no es motivo para fallar
+    avisar(f"Audio conservado en {zip_audio.name} ({megas:.0f} MB).")
     return True
 
 
@@ -293,7 +333,8 @@ def transcribir_grabacion(
                     )
 
         avisar(f"Transcripción de {etiqueta} terminada.")
-        _tirar_audio(zip_destino, avisar)
+        _cerrar_transcripcion(etiqueta, configuracion, avisar)
+        _anunciar_audio(zip_destino, avisar)
         return ResultadoProceso(etiqueta, ok=True)
 
     except Cancelacion:
