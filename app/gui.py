@@ -19,6 +19,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from dataclasses import dataclass
 from datetime import datetime
@@ -27,6 +28,8 @@ from tkinter import filedialog, scrolledtext, ttk
 
 from . import config as cfg
 from . import dependencias, docker_manager, instancia
+from . import supervisor_craig
+from .supervisor_craig import LEVANTAR, Situacion, Supervisor
 from .pipeline import cola as modulo_cola
 from .musica import servicio as servicio_musica
 from .pipeline import orquestador, resumidor
@@ -298,27 +301,73 @@ class Aviso:
     datos: dict | None = None
 
 
+def _recortar(texto: str, limite: int = 58) -> str:
+    """El motivo de un fallo de Docker puede ser un párrafo; la fila, una línea.
+
+    Entero queda en el registro de actividad, que es donde se puede leer.
+    """
+    limpio = " ".join(texto.split())
+    return limpio if len(limpio) <= limite else limpio[: limite - 1] + "…"
+
+
+def _estado_docker(datos: dict) -> tuple[str, str]:
+    """Abierto, abriéndose y cerrado son tres cosas distintas.
+
+    `docker info` falla igual en los dos últimos casos, y el consejo que hay
+    que dar es el contrario: esperar o abrir Docker Desktop.
+    """
+    if not datos.get("docker_instalado"):
+        return ("no instalado", MAL)
+    if datos.get("docker"):
+        return ("en marcha", OK)
+    if datos.get("docker_abriendose"):
+        return ("arrancando (Docker Desktop abriéndose)", ESPERA)
+    return ("parado (abre Docker Desktop)", MAL)
+
+
+def _estado_craig(datos: dict) -> tuple[str, str]:
+    """Lo que importa es el contenedor que graba, no que «haya servicios».
+
+    `db` y `redis` pueden estar en pie con el de Craig muerto; eso salía en
+    verde como «grabando disponible» y no se podía grabar nada.
+    """
+    if not datos.get("craig_instalado"):
+        return ("sin instalar", MAL)
+    if not datos.get("craig_configurado"):
+        return ("falta configurar", ESPERA)
+    if datos.get("craig_en_marcha"):
+        return ("grabando disponible", OK)
+
+    estado = datos.get("craig_estado")
+    # Se recorta la línea entera, no sólo el motivo: lo que no puede pasarse de
+    # largo es la fila, y alrededor del motivo hay texto propio.
+    motivo = datos.get("craig_motivo") or ""
+
+    if estado == supervisor_craig.LEVANTANDO:
+        return ("levantando… (la primera vez tarda)", ESPERA)
+    if not datos.get("docker"):
+        return (
+            "esperando a que Docker arranque"
+            if datos.get("docker_abriendose")
+            else "esperando a Docker",
+            ESPERA,
+        )
+    if estado == supervisor_craig.RENDIDO:
+        return (_recortar(f"no se pudo levantar: {motivo}"), MAL)
+    if estado == supervisor_craig.ESPERANDO:
+        espera = f"reintentando… ({motivo})" if motivo.strip() else "reintentando…"
+        return (_recortar(espera), ESPERA)
+    if datos.get("craig"):
+        otros = ", ".join(datos.get("servicios_activos") or []) or "otros"
+        return (f"caído ({otros} en pie)", MAL)
+    return ("parado", ESPERA)
+
+
 def _estado_servicios(datos: dict) -> dict[str, tuple[str, str]]:
     """Traduce el diagnóstico a (texto, color) por servicio."""
-    if not datos.get("docker_instalado"):
-        docker = ("no instalado", MAL)
-    elif datos.get("docker"):
-        docker = ("en marcha", OK)
-    else:
-        docker = ("parado (abre Docker Desktop)", MAL)
-
-    if not datos.get("craig_instalado"):
-        craig = ("sin instalar", MAL)
-    elif not datos.get("craig_configurado"):
-        craig = ("falta configurar", ESPERA)
-    elif datos.get("craig"):
-        craig = ("grabando disponible", OK)
-    else:
-        craig = ("parado", ESPERA)
-
     return {
-        "docker": docker,
-        "craig": craig,
+        "docker": _estado_docker(datos),
+        "craig": _estado_craig(datos),
         "ollama": ("disponible", OK) if datos.get("ollama") else ("no responde", MAL),
         "ffmpeg": ("disponible", OK) if datos.get("ffmpeg") else ("no encontrado", MAL),
         "gpu": (
@@ -517,6 +566,11 @@ class Ventana:
         # `docker compose ps` puede tardar más que el intervalo de refresco;
         # sin esto se acumularían hilos, uno cada diez segundos.
         self._comprobando = threading.Event()
+        # Quien decide cuando intentar levantar Craig. Antes era un intento
+        # unico al arrancar, y abrir la aplicacion antes que Docker dejaba
+        # Craig parado el resto de la sesion.
+        self.supervisor = Supervisor()
+        self._cerrando = threading.Event()
         # Modelos que Ollama dice tener; se piden en cuanto responde.
         self._modelos_ollama: list[str] = []
 
@@ -969,26 +1023,26 @@ class Ventana:
         self._en_hilo(self._levantar_craig)
 
     def _levantar_craig(self) -> None:
+        """El primer vistazo al arrancar. Levantar ya no se decide aquí.
+
+        De eso se encarga el supervisor en cada ciclo de estado. Antes esto
+        era el único intento de la sesión: si Docker no había terminado de
+        abrirse —que tarda casi un minuto— Craig se quedaba parado hasta
+        que alguien cerrara y volviera a abrir la aplicación.
+        """
         self._avisar("Comprobando Docker...")
 
         if not docker_manager.docker_instalado():
             self._avisar("Docker no está instalado. Craig no puede arrancar.")
         elif not docker_manager.docker_en_marcha():
-            self._avisar("Docker no responde. Abre Docker Desktop.")
-        elif docker_manager.esta_levantado():
-            self._avisar("Craig ya estaba en marcha.")
-        elif faltan := self.configuracion.discord.faltantes():
+            self._avisar(
+                "Docker todavía no responde. Craig se levantará solo en cuanto "
+                "lo haga; no hace falta reiniciar nada."
+            )
+        if faltan := self.configuracion.discord.faltantes():
             self._avisar(
                 f"Faltan credenciales de Discord en {cfg.RUTA_CONFIG.name} "
                 f"[discord]: {', '.join(faltan)}"
-            )
-        else:
-            self._avisar("Levantando Craig (docker compose up)...")
-            resultado = docker_manager.levantar(credenciales=self.configuracion.discord)
-            self._avisar(
-                "Craig levantado."
-                if resultado.ok
-                else f"No se pudo levantar Craig: {resultado.mensaje}"
             )
 
         self._comprobar_servicios()
@@ -1364,8 +1418,49 @@ class Ventana:
         finally:
             self._comprobando.clear()
 
+    def _atender_a_craig(self, diag: dict) -> None:
+        """Levanta Craig si toca. Nunca a ciegas: sólo con Docker respondiendo.
+
+        El intento va en su propio hilo porque `docker compose up` puede tardar
+        minutos —la primera vez, muchos— y este ciclo tiene que seguir
+        refrescando la pestaña mientras tanto.
+        """
+        if self._cerrando.is_set():
+            return
+
+        situacion = Situacion(
+            docker_en_marcha=diag["docker_en_marcha"],
+            craig_en_marcha=diag["craig_en_marcha"],
+            craig_configurado=(
+                diag["craig_instalado"]
+                and not self.configuracion.discord.faltantes()
+            ),
+        )
+        if self.supervisor.decidir(situacion, time.monotonic()) != LEVANTAR:
+            return
+
+        self.supervisor.empezo()
+        self._avisar("Levantando Craig (docker compose up)...")
+        self._en_hilo(self._levantar_ahora)
+
+    def _levantar_ahora(self) -> None:
+        resultado = docker_manager.levantar(credenciales=self.configuracion.discord)
+        self.supervisor.termino(resultado.ok, resultado.mensaje, time.monotonic())
+
+        if resultado.ok:
+            self._avisar("Craig levantado.")
+            return
+
+        self._avisar(f"No se pudo levantar Craig: {resultado.mensaje}")
+        if self.supervisor.estado == supervisor_craig.RENDIDO:
+            self._avisar(
+                "No se intentará más por ahora. Volverá a intentarse si Docker "
+                "se reinicia o si reabres la aplicación."
+            )
+
     def _recoger_servicios(self) -> None:
         diag = docker_manager.diagnostico()
+        self._atender_a_craig(diag)
         gpu = dependencias.comprobar_gpu()
         url = self.configuracion.modelos.url_ollama
         ollama = resumidor.ollama_disponible(url)
@@ -1385,9 +1480,17 @@ class Ventana:
                     "modelos_ollama": modelos,
                     "docker": diag["docker_en_marcha"],
                     "docker_instalado": diag["docker_instalado"],
+                    "docker_abriendose": diag["docker_abriendose"],
                     "craig": diag["craig_levantado"],
+                    "craig_en_marcha": diag["craig_en_marcha"],
+                    "servicios_activos": diag["servicios_activos"],
                     "craig_instalado": diag["craig_instalado"],
-                    "craig_configurado": diag["craig_configurado"],
+                    "craig_configurado": (
+                        diag["craig_configurado"]
+                        and not self.configuracion.discord.faltantes()
+                    ),
+                    "craig_estado": self.supervisor.estado,
+                    "craig_motivo": self.supervisor.motivo,
                     "ollama": ollama,
                     "ffmpeg": dependencias.comprobar_ffmpeg().disponible,
                     "gpu": gpu.disponible,
@@ -1400,6 +1503,9 @@ class Ventana:
     # ------------------------------------------------------------- cierre --
 
     def _al_cerrar(self) -> None:
+        # Antes que nada: cerrar y levantar Craig a la vez dejaría contenedores
+        # a medias, y el ciclo de estado corre en otro hilo.
+        self._cerrando.set()
         self._parar.set()
         self.cola.parar()
         self.musica.parar()

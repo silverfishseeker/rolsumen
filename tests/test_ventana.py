@@ -526,3 +526,109 @@ def test_elegir_carpeta_cuenta_como_cambio_pendiente(ventana, monkeypatch, tmp_p
     ventana._elegir_carpeta(ventana.campos[("musica", "carpeta")], "x")
 
     assert str(ventana.boton_guardar["state"]) == "normal"
+
+
+# --- Levantar Craig solo -----------------------------------------------------
+
+
+def _diag(docker=True, craig=False, instalado=True):
+    return {
+        "docker_en_marcha": docker,
+        "craig_en_marcha": craig,
+        "craig_instalado": instalado,
+    }
+
+
+def _sin_hilos(ventana, monkeypatch):
+    """Los intentos corren en su hilo; aquí interesa verlos pasar.
+
+    Y las credenciales se ponen a mano: heredarlas del `config.ini` de quien
+    ejecute los tests los hace cambiar de resultado sin tocar código.
+    """
+    monkeypatch.setattr(ventana, "_en_hilo", lambda funcion: funcion())
+    ventana.configuracion.discord = gui.cfg.Credenciales("t", "s", "123")
+
+
+def test_con_docker_listo_y_craig_parado_se_levanta(ventana, monkeypatch):
+    _sin_hilos(ventana, monkeypatch)
+    intentos = []
+    monkeypatch.setattr(
+        gui.docker_manager, "levantar",
+        lambda **k: intentos.append(k) or gui.docker_manager.ResultadoComando(True, "", ""),
+    )
+
+    ventana._atender_a_craig(_diag())
+
+    assert len(intentos) == 1
+    assert ventana.supervisor.estado == gui.supervisor_craig.OCIOSO
+
+
+def test_sin_docker_no_se_intenta(ventana, monkeypatch):
+    """Nunca a ciegas: sólo se levanta con el motor respondiendo."""
+    _sin_hilos(ventana, monkeypatch)
+    intentos = []
+    monkeypatch.setattr(
+        gui.docker_manager, "levantar", lambda **k: intentos.append(k)
+    )
+
+    ventana._atender_a_craig(_diag(docker=False))
+
+    assert intentos == []
+
+
+def test_cerrando_no_se_levanta_nada(ventana, monkeypatch):
+    """Bajar y levantar a la vez dejaría contenedores a medias."""
+    _sin_hilos(ventana, monkeypatch)
+    intentos = []
+    monkeypatch.setattr(
+        gui.docker_manager, "levantar", lambda **k: intentos.append(k)
+    )
+    ventana._cerrando.set()
+
+    ventana._atender_a_craig(_diag())
+
+    assert intentos == []
+
+
+def test_un_fallo_deja_el_motivo_a_la_vista(ventana, monkeypatch):
+    _sin_hilos(ventana, monkeypatch)
+    monkeypatch.setattr(
+        gui.docker_manager, "levantar",
+        lambda **k: gui.docker_manager.ResultadoComando(False, "", "port is allocated"),
+    )
+
+    ventana._atender_a_craig(_diag())
+
+    assert ventana.supervisor.estado == gui.supervisor_craig.ESPERANDO
+    assert ventana.supervisor.motivo == "port is allocated"
+
+
+def test_no_se_lanzan_dos_intentos_a_la_vez(ventana, monkeypatch):
+    """El ciclo pasa cada diez segundos y `compose up` tarda mucho más."""
+    intentos = []
+    monkeypatch.setattr(ventana, "_en_hilo", lambda funcion: None)  # no termina
+    monkeypatch.setattr(
+        gui.docker_manager, "levantar", lambda **k: intentos.append(k)
+    )
+
+    ventana._atender_a_craig(_diag())
+    ventana._atender_a_craig(_diag())
+    ventana._atender_a_craig(_diag())
+
+    assert ventana.supervisor.estado == gui.supervisor_craig.LEVANTANDO
+    assert intentos == [], "el hilo ni siquiera arrancó, pero no se reintentó"
+
+
+def test_sin_credenciales_de_discord_no_se_insiste(ventana, monkeypatch):
+    """`compose up` fallaría igual, y gastaría los reintentos para nada."""
+    _sin_hilos(ventana, monkeypatch)
+    ventana.configuracion.discord = gui.cfg.Credenciales()
+    intentos = []
+    monkeypatch.setattr(
+        gui.docker_manager, "levantar", lambda **k: intentos.append(k)
+    )
+
+    ventana._atender_a_craig(_diag())
+
+    assert intentos == []
+    assert ventana.supervisor.fallos == 0, "no cuenta como intento fallido"

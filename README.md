@@ -152,6 +152,35 @@ Quién es cada pista no sale del audio: sale de `<ID>.ogg.users`, un archivo que
 
 Ahora se guarda al terminar de transcribir, que es cuando con seguridad se puede preguntar: se acaba de sacar el audio de Craig. La línea de tiempo se escribe ahí mismo por lo mismo y porque vale por sí sola —es el texto legible de la sesión— y no necesita a Ollama para nada. Que cualquiera de las dos cosas falle no echa a perder la transcripción, que ya está guardada: se avisa y se sigue.
 
+## Craig se levanta solo
+
+La aplicación se puede abrir antes que Docker: Docker Desktop tarda casi un minuto en responder. Antes, Craig se intentaba levantar **una sola vez** al arrancar, así que si en ese momento Docker no estaba listo quedaba una línea en el registro y Craig se quedaba parado el resto de la sesión.
+
+Ahora lo decide un supervisor en cada ciclo de estado, cada diez segundos, con una regla: **nunca se intenta a ciegas**. Sólo se levanta Craig con el motor de Docker respondiendo, así que un fallo ahí es un fallo propio de Craig —puerto ocupado, imagen rota, el contenedor muerto por falta de memoria— y esos casi nunca se arreglan repitiendo el mismo comando. Por eso se reintenta a 1 y a 5 minutos y ahí se para. Pero si Docker se cae y vuelve, eso sí es una situación nueva y se empieza de cero.
+
+Lo mismo cubre que Craig se caiga con la aplicación abierta: se detecta y se vuelve a levantar.
+
+### La pestaña Estado distingue qué está en pie
+
+Dos cosas que antes se decían mal:
+
+**`docker info` falla igual con Docker cerrado que con Docker a medio abrir**, y el consejo es el contrario: esperar o abrir Docker Desktop. Se distinguen mirando si el proceso de Docker Desktop existe.
+
+**«Grabando disponible» salía en verde con el contenedor de Craig muerto**, porque bastaba con que corriera *algún* servicio del compose. `db` y `redis` pueden estar perfectamente en pie sin que se pueda grabar nada. Ahora la fila habla del contenedor `craig`, y si sus compañeros están arriba y él no, lo dice en rojo.
+
+| Docker | Craig |
+|---|---|
+| `no instalado` | `sin instalar` / `falta configurar` |
+| `arrancando (Docker Desktop abriéndose)` | `esperando a que Docker arranque` |
+| `parado (abre Docker Desktop)` | `esperando a Docker` |
+| `en marcha` | `levantando… (la primera vez tarda)` |
+| | `grabando disponible` |
+| | `caído (db, redis en pie)` |
+| | `reintentando… (motivo)` |
+| | `no se pudo levantar: motivo` |
+
+El motivo completo queda en el registro de actividad; en la fila va recortado para que no estire la ventana.
+
 ## Una sola ventana
 
 Abrir la aplicación por segunda vez no arranca otra: trae al frente la que ya está. Dos instancias sobre los mismos datos se pisarían —las dos levantarían Craig, las dos vigilarían grabaciones nuevas y podrían transcribir la misma sesión a la vez, que es justo lo que la cola evita dentro de una—.
